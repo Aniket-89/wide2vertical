@@ -1,0 +1,12 @@
+{
+  "_doc": "Replay-harness labels: hand-picked 'good moment' timestamps (seconds) per video. Run: clipforge eval --labels <this file>. A candidate counts as a hit if a label falls inside it (+/- tolerance_s). The first entry matches tests/scenario.py (synthetic, used by the test suite). Add real videos you have ingested below it.",
+  "version": 1,
+  "videos": [
+    {
+      "url": "https://www.twitch.tv/videos/42",
+      "good_moments_s": [300, 900, 1500],
+      "tolerance_s": 0,
+      "notes": "synthetic scenario from tests/scenario.py"
+    }
+  ]
+}

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import or_, select, update
+import numpy as np
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from clipforge.domain.values import (
@@ -21,12 +23,20 @@ from clipforge.domain.values import (
 )
 from clipforge.infra.db import models as m
 from clipforge.infra.db.repositories import AuditRepo, JobRepo, UsageRepo, VideoRepo
+from clipforge.ports.analysis import (
+    CandidateWindow,
+    ScoringProfileRecord,
+    SignalSeries,
+    StoredCandidate,
+)
 from clipforge.ports.pipeline import (
     AssetRecord,
+    PipelineError,
     ResolvedVideo,
     SourceRecord,
     Transcript,
     VideoRecord,
+    Word,
 )
 
 
@@ -92,6 +102,10 @@ class SqlPipelineStore:
             m.Video.external_id == external_id,
         )
         return self.session.scalars(stmt).one_or_none()
+
+    def video_by_external(self, platform: Platform, external_id: str) -> VideoRecord | None:
+        v = self._video_by_external(platform, external_id)
+        return _video_record(v) if v else None
 
     def upsert_video(
         self, rv: ResolvedVideo, source_id: UUID | None, override_used: bool
@@ -263,6 +277,127 @@ class SqlPipelineStore:
         self, action: str, target_type: str, target_id: UUID | None, **details: object
     ) -> None:
         self._audit.record(action, target_type, target_id, self.actor_user_id, **details)
+
+    # -- analysis (M2)
+    def get_transcript(self, video_id: UUID) -> tuple[str, list[Word]] | None:
+        t = self.session.scalars(
+            select(m.Transcript)
+            .where(
+                m.Transcript.workspace_id == self.workspace_id, m.Transcript.video_id == video_id
+            )
+            .order_by(m.Transcript.id.desc())
+        ).first()
+        if t is None:
+            return None
+        words = [
+            Word(w["w"], float(w["s"]), float(w["e"]), float(w.get("p", 1.0))) for w in t.words
+        ]
+        return f"{t.content_hash}:{t.config_version}", words
+
+    def get_scoring_profile(self, name: str | None) -> ScoringProfileRecord:
+        stmt = select(m.ScoringProfile).where(m.ScoringProfile.workspace_id == self.workspace_id)
+        if name is None:
+            stmt = stmt.order_by(
+                m.ScoringProfile.is_default.desc(), m.ScoringProfile.version.desc()
+            )
+        else:
+            stmt = stmt.where(m.ScoringProfile.name == name).order_by(
+                m.ScoringProfile.version.desc()
+            )
+        p = self.session.scalars(stmt).first()
+        if p is None:
+            raise PipelineError(f"scoring profile {name or '(default)'} not found")
+        return ScoringProfileRecord(p.id, p.name, p.version, dict(p.weights), dict(p.params))
+
+    def find_signal(self, video_id: UUID, name: str, input_hash: str) -> SignalSeries | None:
+        row = self.session.scalars(
+            select(m.SignalSeries).where(
+                m.SignalSeries.workspace_id == self.workspace_id,
+                m.SignalSeries.video_id == video_id,
+                m.SignalSeries.signal_name == name,
+                m.SignalSeries.input_hash == input_hash,
+            )
+        ).first()
+        if row is None:
+            return None
+        return SignalSeries(
+            row.signal_name,
+            row.signal_version,
+            np.asarray(row.values, dtype=np.float64),
+            dict(row.meta),
+        )
+
+    def save_signal(self, video_id: UUID, s: SignalSeries, input_hash: str) -> None:
+        if self.find_signal(video_id, s.name, input_hash) is not None:
+            return
+        self.session.add(
+            m.SignalSeries(
+                workspace_id=self.workspace_id,
+                video_id=video_id,
+                signal_name=s.name,
+                signal_version=s.version,
+                resolution_s=1.0,
+                values=[round(float(v), 4) for v in s.values],
+                meta=dict(s.meta),
+                input_hash=input_hash,
+            )
+        )
+        self.session.flush()
+
+    def replace_candidates(
+        self, video_id: UUID, profile_id: UUID, windows: Sequence[CandidateWindow]
+    ) -> int:
+        scope = (
+            m.Candidate.workspace_id == self.workspace_id,
+            m.Candidate.video_id == video_id,
+            m.Candidate.scoring_profile_id == profile_id,
+        )
+        has_clip = select(m.Clip.candidate_id).where(m.Clip.workspace_id == self.workspace_id)
+        self.session.execute(
+            delete(m.Candidate).where(
+                *scope, m.Candidate.status == "pending", m.Candidate.id.not_in(has_clip)
+            )
+        )
+        kept = {
+            (c.start_s, c.end_s) for c in self.session.scalars(select(m.Candidate).where(*scope))
+        }
+        inserted = 0
+        for rank, w in enumerate(windows, start=1):
+            if (w.start_s, w.end_s) in kept:  # already reviewed: keep the human decision
+                continue
+            self.session.add(
+                m.Candidate(
+                    workspace_id=self.workspace_id,
+                    video_id=video_id,
+                    scoring_profile_id=profile_id,
+                    start_s=w.start_s,
+                    end_s=w.end_s,
+                    score=w.score,
+                    components={**w.components, "peak_s": w.peak_s},
+                    reason=w.reason,
+                    rank=rank,
+                    status="pending",
+                )
+            )
+            inserted += 1
+        self.session.flush()
+        return inserted
+
+    def list_candidates(
+        self, video_id: UUID, profile_id: UUID | None = None, limit: int = 100
+    ) -> list[StoredCandidate]:
+        stmt = select(m.Candidate).where(
+            m.Candidate.workspace_id == self.workspace_id, m.Candidate.video_id == video_id
+        )
+        if profile_id is not None:
+            stmt = stmt.where(m.Candidate.scoring_profile_id == profile_id)
+        stmt = stmt.order_by(m.Candidate.score.desc()).limit(limit)
+        return [
+            StoredCandidate(
+                c.id, c.rank, c.start_s, c.end_s, c.score, dict(c.components), c.reason, c.status
+            )
+            for c in self.session.scalars(stmt)
+        ]
 
 
 def stage_overview(

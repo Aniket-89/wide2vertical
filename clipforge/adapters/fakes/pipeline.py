@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+import numpy as np
 
 from clipforge.adapters.resolvers.urls import parse_video_url
 from clipforge.domain.ids import new_id
@@ -20,10 +22,20 @@ from clipforge.domain.values import (
     WorkspaceId,
     normalise_handle,
 )
+from clipforge.ports.analysis import (
+    CandidateWindow,
+    ChatMessage,
+    ChatUnavailable,
+    FloatArray,
+    ScoringProfileRecord,
+    SignalSeries,
+    StoredCandidate,
+)
 from clipforge.ports.pipeline import (
     AssetRecord,
     FetchedFile,
     FetchFailed,
+    PipelineError,
     ResolvedVideo,
     ResolveFailed,
     SourceRecord,
@@ -263,3 +275,99 @@ class InMemoryPipelineStore:
         self, action: str, target_type: str, target_id: UUID | None, **details: object
     ) -> None:
         self.audits.append({"action": action, "target_id": target_id, **details})
+
+
+# ====================================================================== M2 fakes
+class FakeChatProvider:
+    """Serves fixed messages; ``fail`` simulates the provider being down (e.g. Kick)."""
+
+    def __init__(
+        self, platform: Platform, messages: Sequence[ChatMessage] = (), fail: bool = False
+    ) -> None:
+        self.platform = platform
+        self.messages = list(messages)
+        self.fail = fail
+        self.calls = 0
+
+    def fetch_replay(self, video: ResolvedVideo) -> Iterator[ChatMessage]:
+        self.calls += 1
+        if self.fail:
+            raise ChatUnavailable("fake: chat provider down")
+        yield from self.messages
+
+
+class FakeAudioAnalyzer:
+    def __init__(self, rms_db: Sequence[float] | None = None, fail: bool = False) -> None:
+        self.rms_db = rms_db
+        self.fail = fail
+        self.calls = 0
+
+    @property
+    def version(self) -> str:
+        return "fake-rms-1"
+
+    def rms_db_per_second(self, audio: Path) -> FloatArray:
+        self.calls += 1
+        if self.fail:
+            raise PipelineError("fake: audio decode failed")
+        return np.asarray(self.rms_db if self.rms_db is not None else [-30.0] * 60, dtype=float)
+
+
+@dataclass
+class InMemoryAnalysisStore(InMemoryPipelineStore):
+    """InMemoryPipelineStore + the M2 AnalysisStore methods."""
+
+    profiles: list[ScoringProfileRecord] = field(default_factory=list)
+    signal_rows: dict[tuple[UUID, str, str], SignalSeries] = field(default_factory=dict)
+    candidates: dict[UUID, list[StoredCandidate]] = field(default_factory=dict)
+    candidate_profile: dict[UUID, UUID] = field(default_factory=dict)
+
+    def get_transcript(self, video_id: UUID) -> tuple[str, Sequence[Word]] | None:
+        for (vid, h, cfg), t in reversed(list(self.transcripts.items())):
+            if vid == video_id:
+                return f"{h}:{cfg}", t.words
+        return None
+
+    def get_scoring_profile(self, name: str | None) -> ScoringProfileRecord:
+        matches = [p for p in self.profiles if name is None or p.name == name]
+        if not matches:
+            raise PipelineError(f"scoring profile {name or '(default)'} not found")
+        return max(matches, key=lambda p: p.version)
+
+    def find_signal(self, video_id: UUID, name: str, input_hash: str) -> SignalSeries | None:
+        return self.signal_rows.get((video_id, name, input_hash))
+
+    def save_signal(self, video_id: UUID, s: SignalSeries, input_hash: str) -> None:
+        self.signal_rows.setdefault((video_id, s.name, input_hash), s)
+
+    def replace_candidates(
+        self, video_id: UUID, profile_id: UUID, windows: Sequence[CandidateWindow]
+    ) -> int:
+        current = self.candidates.get(video_id, [])
+        keep = [
+            c
+            for c in current
+            if self.candidate_profile.get(c.id) != profile_id or c.status != "pending"
+        ]
+        kept_bounds = {(c.start_s, c.end_s) for c in keep}
+        new = []
+        for rank, w in enumerate(windows, start=1):
+            if (w.start_s, w.end_s) in kept_bounds:
+                continue
+            c = StoredCandidate(
+                new_id(), rank, w.start_s, w.end_s, w.score, dict(w.components), w.reason, "pending"
+            )
+            self.candidate_profile[c.id] = profile_id
+            new.append(c)
+        self.candidates[video_id] = keep + new
+        return len(new)
+
+    def list_candidates(
+        self, video_id: UUID, profile_id: UUID | None = None, limit: int = 100
+    ) -> Sequence[StoredCandidate]:
+        rows = [
+            c
+            for c in self.candidates.get(video_id, [])
+            if profile_id is None or self.candidate_profile.get(c.id) == profile_id
+        ]
+        return sorted(rows, key=lambda c: -c.score)[:limit]

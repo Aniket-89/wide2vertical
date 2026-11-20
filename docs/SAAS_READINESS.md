@@ -23,7 +23,7 @@ Status key: ✅ done · 🟡 seam exists, not built · ⬜ not started
 | Takedown flow | ✅ | `POST /sources/{id}/retire` / `clipforge sources retire`; override can't bypass it |
 | ToS/DMCA process documented | ⬜ | Before any public use |
 | Per-workspace cost attribution | 🟡 | `usage_events.workspace_id`; report in M3 |
-| Versioned scoring profiles & prompts | 🟡 | Immutable `(name, version)` rows; PROMPTS.md versions in M3 |
+| Versioned scoring profiles & prompts | 🟡 | Immutable `(name, version)` rows, and every param is in the signal cache key, so results are reproducible; PROMPTS.md versions come in M3 |
 | API versioned `/api/v1` | ✅ | |
 | Pagination | ✅ | limit/offset on list endpoints |
 | Idempotency keys on mutating endpoints | 🟡 | `POST /videos` is naturally idempotent (upsert by platform+id); `Idempotency-Key` middleware still TODO |

@@ -1,0 +1,5 @@
+{"replayChatItemAction": {"videoOffsetTimeMsec": "4200", "actions": [{"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {"message": {"runs": [{"text": "lets gooo "}, {"emoji": {"emojiId": "x", "shortcuts": [":fire:"]}}]}, "authorName": {"simpleText": "Viewer One"}}}}}]}}
+{"replayChatItemAction": {"videoOffsetTimeMsec": "9000", "actions": [{"addChatItemAction": {"item": {"liveChatPaidMessageRenderer": {"message": {"runs": [{"text": "superchat!"}]}, "authorName": {"simpleText": "Donor"}}}}}]}}
+{"replayChatItemAction": {"videoOffsetTimeMsec": "9500", "actions": [{"addChatItemAction": {"item": {"liveChatViewerEngagementMessageRenderer": {}}}}]}}
+not json at all
+{"replayChatItemAction": {"videoOffsetTimeMsec": "-1", "actions": []}}

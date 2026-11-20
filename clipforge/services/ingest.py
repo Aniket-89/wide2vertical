@@ -6,17 +6,16 @@ recorded as SKIPPED and returns the cached result.
 
 from __future__ import annotations
 
-import hashlib
 import tempfile
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
 from clipforge.compliance.allowlist import SourceFacts, Verdict, decide
-from clipforge.domain.events import StageCompleted, StageFailed, VideoIngested
-from clipforge.domain.values import BlobKey, JobStatus, SourceStatus, Stage
+from clipforge.domain.events import VideoIngested
+from clipforge.domain.values import BlobKey, Stage
 from clipforge.ports.infra import BlobStore, EventBus, QuotaService
 from clipforge.ports.pipeline import (
     MIN_COMPLETENESS,
@@ -30,14 +29,15 @@ from clipforge.ports.pipeline import (
     UnsupportedUrl,
     VideoRecord,
 )
+from clipforge.services._common import (
+    SourceNotAllowed,
+    require_not_retired,
+    require_video,
+    sha256_text,
+    track_stage,
+)
 
-
-class SourceNotAllowed(PipelineError):
-    """The allowlist refused this URL. ``reason`` is user-facing."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
+__all__ = ["IngestPipeline", "IngestResult", "QuotaExceeded", "SourceNotAllowed", "sha256_text"]
 
 
 class QuotaExceeded(PipelineError):
@@ -61,10 +61,6 @@ def _complete(measured: float | None, expected: float | None) -> bool:
     return measured >= MIN_COMPLETENESS * expected
 
 
-def sha256_text(*parts: str) -> str:
-    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
-
-
 class IngestPipeline:
     def __init__(
         self,
@@ -85,30 +81,10 @@ class IngestPipeline:
         self.quota = quota
 
     # ------------------------------------------------------------ helpers
-    @contextmanager
-    def _stage(self, video_id: UUID, stage: Stage, input_hash: str) -> Iterator[list[bool]]:
-        """Track a stage in job_runs. Yield a 1-item list; set [0]=True to mark it SKIPPED."""
-        run_id = self.store.begin_stage(video_id, stage, input_hash)
-        skipped = [False]
-        try:
-            yield skipped
-        except Exception as exc:
-            self.store.end_stage(run_id, JobStatus.FAILED, f"{type(exc).__name__}: {exc}"[:2000])
-            self.store.set_video_status(video_id, f"{stage.value}_failed")
-            self.events.publish(
-                StageFailed(
-                    workspace_id=self.store.workspace_id,
-                    video_id=video_id,
-                    stage=stage,
-                    error=type(exc).__name__,
-                )
-            )
-            raise
-        self.store.end_stage(run_id, JobStatus.SKIPPED if skipped[0] else JobStatus.SUCCEEDED)
-        self.store.set_video_status(video_id, f"{stage.value}_done")
-        self.events.publish(
-            StageCompleted(workspace_id=self.store.workspace_id, video_id=video_id, stage=stage)
-        )
+    def _stage(
+        self, video_id: UUID, stage: Stage, input_hash: str
+    ) -> AbstractContextManager[list[bool]]:
+        return track_stage(self.store, self.events, video_id, stage, input_hash)
 
     def _resolver_for(self, url: str) -> SourceResolver:
         for r in self.resolvers:
@@ -117,20 +93,10 @@ class IngestPipeline:
         raise UnsupportedUrl(f"no resolver supports {url!r}")
 
     def _require_video(self, video_id: UUID) -> VideoRecord:
-        video = self.store.get_video(video_id)
-        if video is None:
-            raise PipelineError(f"video {video_id} not found in this workspace")
-        return video
+        return require_video(self.store, video_id)
 
     def _require_not_retired(self, video: VideoRecord, stage: Stage) -> None:
-        """Takedowns apply to work already queued: re-check before every heavy stage."""
-        src = self.store.source_for_video(video)
-        if src is not None and src.status is SourceStatus.RETIRED:
-            self.store.audit(
-                "pipeline.blocked", "video", video.id, stage=stage.value, reason="source retired"
-            )
-            self.store.set_video_status(video.id, "source_retired")
-            raise SourceNotAllowed("source is retired (takedown); processing stopped")
+        require_not_retired(self.store, video, stage)
 
     # ------------------------------------------------------------ stage 1: ingest
     def ingest(self, url: str, *, override: bool = False) -> IngestResult:

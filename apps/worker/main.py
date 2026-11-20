@@ -61,8 +61,22 @@ def _fetch(payload: dict[str, Any]) -> None:
 @handler("pipeline.transcribe")
 def _transcribe(payload: dict[str, Any]) -> None:
     ws, video_id = _ids(payload)
+    c = get_container()
     with session_scope(commit_on_error=True) as session:
-        get_container().ingest_pipeline(session, ws).transcribe(video_id)
+        c.ingest_pipeline(session, ws).transcribe(video_id)
+    c.queue.enqueue("pipeline.analyze", payload, priority=Priority.NORMAL)
+
+
+@handler("pipeline.analyze")
+def _analyze(payload: dict[str, Any]) -> None:
+    ws, video_id = _ids(payload)
+    with session_scope(commit_on_error=True) as session:
+        res = (
+            get_container()
+            .analyze_pipeline(session, ws)
+            .analyze(video_id, payload.get("scoring_profile"))
+        )
+    log.info("analyzed", candidates=len(res.candidates), chat=res.chat_status, signals=res.signals)
 
 
 @dramatiq.actor(actor_name=DISPATCH_ACTOR, max_retries=3, min_backoff=2_000, max_backoff=60_000)

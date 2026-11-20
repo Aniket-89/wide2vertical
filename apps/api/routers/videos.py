@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from apps.api.deps import ContainerDep, PrincipalDep, SessionDep
 from clipforge.infra.db import models as m
-from clipforge.infra.db.pipeline_store import stage_overview
+from clipforge.infra.db.pipeline_store import SqlPipelineStore, stage_overview
 from clipforge.infra.db.repositories import ScoringProfileRepo, VideoRepo
 from clipforge.ports.infra import Priority
 from clipforge.ports.pipeline import PipelineError, UnsupportedUrl
@@ -114,3 +114,40 @@ def get_video(video_id: UUID, principal: PrincipalDep, session: SessionDep) -> d
     if v is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "video not found")
     return {**_out(v), "stages": stage_overview(session, principal.workspace_id, video_id)}
+
+
+class CandidateOut(BaseModel):
+    id: UUID
+    rank: int
+    start_s: float
+    end_s: float
+    score: float
+    components: dict[str, Any]
+    reason: str
+    status: str
+
+
+@router.get("/{video_id}/candidates", response_model=list[CandidateOut])
+def list_video_candidates(
+    video_id: UUID,
+    principal: PrincipalDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[dict[str, Any]]:
+    """Ranked candidates (best first) with per-signal component scores."""
+    if VideoRepo(session, principal.workspace_id).get(video_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "video not found")
+    rows = SqlPipelineStore(session, principal.workspace_id).list_candidates(video_id, limit=limit)
+    return [
+        {
+            "id": c.id,
+            "rank": c.rank,
+            "start_s": c.start_s,
+            "end_s": c.end_s,
+            "score": c.score,
+            "components": c.components,
+            "reason": c.reason,
+            "status": c.status,
+        }
+        for c in rows
+    ]

@@ -65,6 +65,27 @@ POST /videos or `clipforge ingest URL`
   with the error (ADR-0012) and published as `StageFailed`.
 - Transcript word format: `{"w": text, "s": start_s, "e": end_s, "p": probability}`.
 
+## Analysis (M2)
+
+```
+pipeline.transcribe done -> pipeline.analyze (worker) or `clipforge analyze <video_id>`
+  -> signals     chat (ChatProvider, flagged, fail-soft; cached as chat_dump asset)
+                 audio loudness (AudioAnalyzer: PyAV, streamed; cached as _audio_rms_db series)
+                 signals/*.py -> 0..1 per second -> signal_series (cached by input hash)
+  -> candidates  scoring/: combine -> find_peaks -> make_window (snap) -> nms -> candidates
+```
+
+| Signal | Needs | Idea |
+|---|---|---|
+| `chat_velocity` | chat (>= 50 msgs) | msgs/s vs rolling 300 s baseline, shifted 6 s earlier |
+| `emote_burst` | chat | share of emote/spam msgs above the usual share, volume-weighted |
+| `audio_energy` | audio | RMS dBFS vs 60 s baseline + sudden jumps |
+| `speech_intensity` | transcript (required) | words/s vs 120 s baseline + exclamations/hype words |
+
+Design notes are in ADR-0023. Replay harness: `clipforge eval --labels tests/fixtures/labels.json
+[--profile p] [--weight name=v] [--param name=v] [--k 5 --k 10]` reports precision@K and
+recall@K without writing candidates.
+
 ## HTTP surface
 
 | Path | Auth | Purpose |
@@ -77,6 +98,7 @@ POST /videos or `clipforge ingest URL`
 | `GET /api/v1/videos`, `GET /api/v1/videos/{id}` | bearer | list (limit/offset); detail with per-stage status |
 | `GET/POST /api/v1/sources`, `PATCH /api/v1/sources/{id}` | bearer | allowlist management |
 | `POST /api/v1/sources/{id}/retire` | bearer | takedown: block the source and hide its clips |
+| `GET /api/v1/videos/{id}/candidates` | bearer | ranked candidates with per-signal components and reason |
 | `GET /api/v1/openapi.json`, `/api/v1/docs` | none | OpenAPI |
 
 ## Running locally
@@ -90,6 +112,9 @@ uv run uvicorn apps.api.main:app --reload
 uv run clipforge sources add twitch somestreamer --policy campaign --credit "Clip: @somestreamer"
 uv run clipforge ingest https://www.twitch.tv/videos/123   # add --override for non-allowlisted
 uv run clipforge status <video_id>
+uv run clipforge analyze <video_id> [--profile p] [--dry-run]   # signals + candidates
+uv run clipforge candidates <video_id>
+uv run clipforge eval --labels tests/fixtures/labels.json
 uv run pytest                          # CLIPFORGE_NETWORK_TESTS=1 also runs real yt-dlp/whisper
 # or everything in containers:
 docker compose up --build

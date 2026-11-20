@@ -147,3 +147,51 @@ and transcribe run. (2) `retire()` matched videos only by `source_id`, so videos
 `video_assets.duration_s` now stores the measured length, and a cached asset that measured
 short is re-fetched. Unknown duration (no ffprobe on the host) is trusted, so runs don't
 re-download every time.
+
+## ADR-0022 — Chat authors are stored as salted hashes (2026-11-20)
+Chat authors are third parties who never agreed to be in our dataset. Adapters store
+`sha256(workspace_id + lowercase name)[:16]`. That's enough to count unique chatters and spot
+spam, not reversible to a username, and different per workspace. Message text is kept, because the
+signals need it.
+
+## ADR-0023 — Signal and scoring design (2026-11-20)
+- **Local baselines, not global.** Each signal is scored against a rolling median/MAD
+  (chat 300 s, audio 60 s, speech 120 s), so a stream that gets busier over time doesn't drown
+  early moments, and quiet streams still register.
+- **Soft saturation** `z / (z + z_half)` instead of clipping. Hard clipping made a 4σ noise blip
+  and a 29σ chat explosion both 1.0, and the synthetic-scenario test caught noise outranking a
+  real moment.
+- **Chat lag correction** (`chat_lag_s`, default 6). Chat reacts after the moment, so chat
+  signals are shifted earlier. A test proves that without it, peaks land late.
+- **Weights re-normalise over available signals.** No chat → audio + speech carry the score
+  instead of being capped at (1 − chat weight).
+- **Windows:** peak − `setup_s` (18) to peak + `payoff_s` (9). Edges snap to the nearest sentence
+  end or ≥0.7 s pause within ±6 s, never past the peak. Then lead-in 1.5 s / tail 1 s, and length
+  is clamped to 20–60 s (the setup is trimmed first, the payoff kept). NMS uses IoU 0.3, a 30 s
+  peak gap and `max_clips_per_hour`.
+- **Window score** = 0.6 × combined peak + 0.4 × combined mean. Every signal's in-window max is
+  stored as `components`, plus a human-readable `reason`.
+- **Every parameter** lives in the scoring profile's `params`/`weights` and feeds the signal
+  cache key, so changing a profile recomputes exactly what it affects.
+
+## ADR-0024 — Twitch VOD chat: integrity check stops us; official live capture instead (2026-11-20)
+On the real M2 run, Twitch's GQL endpoint answered "failed integrity check". VOD comments now
+require a client-integrity token (anti-bot). Obtaining one would mean evading bot protection,
+which spec §2 forbids, so we stop there: the adapter fails soft and analysis continues on audio
++ transcript (shown on the real VOD). The adapter stays behind its flag in case Twitch relaxes
+this.
+**Path forward:** capture chat *live* through Twitch's official chat interface (IRC/EventSub)
+in M7 and store it as the `chat_dump` asset. VODs recorded while capture runs then get chat
+signals with no unofficial endpoints. YouTube live-chat replay (yt-dlp) is implemented and
+fixture-tested but not yet verified on a real past livestream.
+
+## ADR-0025 — URL rules live in the domain (2026-11-20)
+`parse_video_url` and canonicalisation are pure rules the CLI needs (to map labels to videos),
+so they moved to `clipforge.domain.urls`. The yt-dlp extractor map stays in the adapter.
+import-linter caught the CLI importing the adapter directly.
+
+## ADR-0026 — Re-analysis replaces only pending candidates (2026-11-20)
+`replace_candidates` deletes this profile's *pending* candidates (never ones with clips) and
+inserts the new ranking, skipping windows identical to reviewed ones. Approve/reject decisions
+are training data (`feedback_events` from M4) and must survive re-scoring. The replay harness
+(`clipforge eval`) runs with `persist=False` and never touches candidates.

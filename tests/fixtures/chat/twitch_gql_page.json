@@ -1,0 +1,40 @@
+[
+  {
+    "_note": "SYNTHETIC: shape of Twitch web GQL VideoCommentsByOffsetOrCursor (trimmed).",
+    "data": {
+      "video": {
+        "id": "2929921638",
+        "comments": {
+          "edges": [
+            {
+              "cursor": "c1",
+              "node": {
+                "contentOffsetSeconds": 12,
+                "commenter": {"login": "SomeViewer"},
+                "message": {"fragments": [{"text": "hello chat", "emote": null}]}
+              }
+            },
+            {
+              "cursor": "c2",
+              "node": {
+                "contentOffsetSeconds": 15,
+                "commenter": {"login": "another"},
+                "message": {"fragments": [
+                  {"text": "KEKW", "emote": {"emoteID": "1"}},
+                  {"text": " ", "emote": null},
+                  {"text": "KEKW", "emote": {"emoteID": "1"}}
+                ]}
+              }
+            },
+            {
+              "cursor": "c3",
+              "node": {"contentOffsetSeconds": 16, "commenter": null,
+                       "message": {"fragments": []}}
+            }
+          ],
+          "pageInfo": {"hasNextPage": true}
+        }
+      }
+    }
+  }
+]

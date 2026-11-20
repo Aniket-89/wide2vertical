@@ -21,6 +21,7 @@ dependencies = [
     "yt-dlp>=2026.10.26",
     "faster-whisper>=1.2.1",
     "av<16",
+    "numpy>=2.5.5",
 ]
 
 [dependency-groups]
