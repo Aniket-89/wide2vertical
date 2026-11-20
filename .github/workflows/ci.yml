@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: clipforge, POSTGRES_PASSWORD: clipforge, POSTGRES_DB: clipforge }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U clipforge" --health-interval 3s --health-retries 20
+    env:
+      CLIPFORGE_TEST_DATABASE_URL: postgresql+psycopg://clipforge:clipforge@127.0.0.1:5432/clipforge_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with: { enable-cache: true }
+      - run: uv sync --frozen --python 3.12
+      - name: Lint
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Type-check
+        run: uv run mypy clipforge apps
+      - name: Module boundaries
+        run: uv run lint-imports
+      - name: Tests
+        run: uv run pytest -q --cov=clipforge --cov-report=term-missing
+      - name: Migrations match models
+        env:
+          CLIPFORGE_DATABASE_URL: postgresql+psycopg://clipforge:clipforge@127.0.0.1:5432/clipforge_test
+        run: uv run alembic check

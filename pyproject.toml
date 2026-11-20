@@ -1,0 +1,107 @@
+[project]
+name = "clipforge"
+version = "0.1.0"
+description = "AI stream clipping engine: long streams in, vertical captioned clips out."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "dramatiq[redis]>=1.17",
+    "redis>=5.2",
+    "structlog>=24.4",
+    "prometheus-client>=0.21",
+    "uuid-utils>=0.9",
+    "typer>=0.13",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "import-linter>=2.1",
+    "pre-commit>=4.0",
+]
+
+[project.scripts]
+clipforge = "apps.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clipforge", "apps"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["apps/web"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "PTH", "T20"]
+ignore = ["S101"]  # assert is fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "PTH"]
+"migrations/**" = ["E501", "W291"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["apps/web/", "migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["clipforge.domain.*", "clipforge.services.*", "clipforge.ports.*"]
+strict = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "db: needs a reachable PostgreSQL (DATABASE_URL); skipped if unavailable",
+]
+addopts = "-ra"
+
+# ---------------------------------------------------------------- import-linter
+[tool.importlinter]
+root_packages = ["clipforge", "apps"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain is pure"
+type = "forbidden"
+source_modules = ["clipforge.domain"]
+forbidden_modules = [
+    "clipforge.ports", "clipforge.services", "clipforge.adapters", "clipforge.infra",
+    "clipforge.signals", "clipforge.scoring", "clipforge.compliance", "apps",
+    "sqlalchemy", "fastapi",
+]
+
+[[tool.importlinter.contracts]]
+name = "Core never imports adapters or infra"
+type = "forbidden"
+source_modules = [
+    "clipforge.ports", "clipforge.services", "clipforge.signals",
+    "clipforge.scoring", "clipforge.compliance",
+]
+forbidden_modules = ["clipforge.adapters", "clipforge.infra", "apps"]
+
+[[tool.importlinter.contracts]]
+name = "Only the registry wires adapters"
+type = "forbidden"
+source_modules = ["apps"]
+forbidden_modules = ["clipforge.adapters"]
+allow_indirect_imports = true  # via clipforge.infra.registry is the point

@@ -1,0 +1,66 @@
+name: clipforge
+
+x-python: &python
+  build: { context: ., dockerfile: docker/Dockerfile.python }
+  env_file: [.env]
+  environment:
+    CLIPFORGE_DATABASE_URL: postgresql+psycopg://clipforge:clipforge@postgres:5432/clipforge
+    CLIPFORGE_REDIS_URL: redis://redis:6379/0
+    CLIPFORGE_BLOB_ROOT: /data/blobs
+  volumes: [blobs:/data/blobs]
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: clipforge, POSTGRES_PASSWORD: clipforge, POSTGRES_DB: clipforge }
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clipforge"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6380:6379"]  # host 6379 is often taken by a native Redis on Windows
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  migrate:
+    <<: *python
+    command: ["sh", "-c", "alembic upgrade head && clipforge seed"]
+    restart: "no"
+
+  api:
+    <<: *python
+    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    <<: *python
+    command: ["dramatiq", "apps.worker.main", "--processes", "1", "--threads", "2",
+              "--queues", "default", "default_high", "default_low"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  # Transcription pool. CPU by default; enable GPU later (ADR-0005).
+  worker-gpu:
+    <<: *python
+    profiles: ["gpu"]
+    command: ["dramatiq", "apps.worker.main", "--processes", "1", "--threads", "1",
+              "--queues", "transcribe", "transcribe_high", "transcribe_low"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  # web: added in M5
+
+volumes:
+  pgdata:
+  blobs:
