@@ -13,5 +13,5 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 
-RUN useradd -m clipforge && mkdir -p /data/blobs && chown -R clipforge /data
+RUN useradd -m clipforge && mkdir -p /data/blobs /home/clipforge/.cache/huggingface \n && chown -R clipforge /data /home/clipforge/.cache
 USER clipforge

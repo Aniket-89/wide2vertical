@@ -47,7 +47,25 @@ the single `clipforge_dispatch` actor → `HANDLERS[kind](payload)`. Redis has n
 priority, so priorities are separate queues. Transcription gets its own queue family
 (`transcribe*`) consumed by `worker-gpu`, so GPU capacity scales independently.
 
-## HTTP surface (M0)
+## Pipeline (M1)
+
+```
+POST /videos or `clipforge ingest URL`
+  -> ingest     resolve (yt-dlp -J) -> allowlist.decide -> upsert video   [sync]
+  -> fetch      yt-dlp bestaudio -> BlobStore ws/<ws>/videos/<id>/audio.* [queue: default]
+  -> transcribe faster-whisper, word timestamps -> transcripts.words      [queue: transcribe]
+```
+
+- Each stage = one `jobs` row per (video, stage) and one `job_runs` row per attempt.
+- Cache keys: fetch reuses the audio asset if its blob still exists, and transcribe reuses a
+  transcript with the same `(audio content_hash, transcriber.config_version)`. Rerunning
+  produces no duplicate rows (integration test `test_pipeline_twice_creates_no_duplicates`).
+- Metering: `usage_events` gets `storage_bytes` (audio) and `transcribe_minutes`.
+- Degradation: a whisper OOM or CUDA error retries once on CPU/int8; stage failures are recorded
+  with the error (ADR-0012) and published as `StageFailed`.
+- Transcript word format: `{"w": text, "s": start_s, "e": end_s, "p": probability}`.
+
+## HTTP surface
 
 | Path | Auth | Purpose |
 |---|---|---|
@@ -55,6 +73,10 @@ priority, so priorities are separate queues. Transcription gets its own queue fa
 | `GET /health/ready` | none | DB + Redis reachability (503 when degraded) |
 | `GET /metrics` | none | Prometheus |
 | `GET /api/v1/me` | bearer | auth-seam check |
+| `POST /api/v1/videos` | bearer | `{url, override?, scoring_profile_id?}` -> 201 new / 200 existing / 403 refused / 422 unsupported |
+| `GET /api/v1/videos`, `GET /api/v1/videos/{id}` | bearer | list (limit/offset); detail with per-stage status |
+| `GET/POST /api/v1/sources`, `PATCH /api/v1/sources/{id}` | bearer | allowlist management |
+| `POST /api/v1/sources/{id}/retire` | bearer | takedown: block the source and hide its clips |
 | `GET /api/v1/openapi.json`, `/api/v1/docs` | none | OpenAPI |
 
 ## Running locally
@@ -65,7 +87,10 @@ docker compose up -d postgres redis
 uv sync
 uv run alembic upgrade head && uv run clipforge seed
 uv run uvicorn apps.api.main:app --reload
-uv run pytest
+uv run clipforge sources add twitch somestreamer --policy campaign --credit "Clip: @somestreamer"
+uv run clipforge ingest https://www.twitch.tv/videos/123   # add --override for non-allowlisted
+uv run clipforge status <video_id>
+uv run pytest                          # CLIPFORGE_NETWORK_TESTS=1 also runs real yt-dlp/whisper
 # or everything in containers:
 docker compose up --build
 ```

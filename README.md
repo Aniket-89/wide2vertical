@@ -10,7 +10,8 @@ Personal tool first, with SaaS-ready seams. The full spec is in `CLAUDE CODE PRO
 | Milestone | State |
 |---|---|
 | M0 Skeleton | ✅ |
-| M1 Ingest + transcript | next |
+| M1 Ingest + transcript | ✅ |
+| M2 Signals + candidates | next |
 
 ## Quick start
 

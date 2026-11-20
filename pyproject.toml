@@ -18,6 +18,9 @@ dependencies = [
     "prometheus-client>=0.21",
     "uuid-utils>=0.9",
     "typer>=0.13",
+    "yt-dlp>=2026.10.26",
+    "faster-whisper>=1.2.1",
+    "av<16",
 ]
 
 [dependency-groups]

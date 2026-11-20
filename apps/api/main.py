@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 import structlog
 from fastapi import FastAPI, Request, Response
 
-from apps.api.routers import health, me
+from apps.api.routers import health, me, sources, videos
 from clipforge.infra.config import get_settings
 from clipforge.infra.logging import configure_logging
 from clipforge.infra.metrics import HTTP_REQUESTS
@@ -47,6 +47,8 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(me.router, prefix="/api/v1")
+    app.include_router(sources.router, prefix="/api/v1")
+    app.include_router(videos.router, prefix="/api/v1")
     return app
 
 

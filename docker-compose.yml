@@ -7,7 +7,9 @@ x-python: &python
     CLIPFORGE_DATABASE_URL: postgresql+psycopg://clipforge:clipforge@postgres:5432/clipforge
     CLIPFORGE_REDIS_URL: redis://redis:6379/0
     CLIPFORGE_BLOB_ROOT: /data/blobs
-  volumes: [blobs:/data/blobs]
+  volumes:
+    - blobs:/data/blobs
+    - models:/home/clipforge/.cache/huggingface  # whisper model cache
   depends_on:
     postgres: { condition: service_healthy }
     redis: { condition: service_healthy }
@@ -46,7 +48,8 @@ services:
   worker:
     <<: *python
     command: ["dramatiq", "apps.worker.main", "--processes", "1", "--threads", "2",
-              "--queues", "default", "default_high", "default_low"]
+              "--queues", "default", "default_high", "default_low",
+              "transcribe", "transcribe_high", "transcribe_low"]  # drop transcribe* when worker-gpu runs
     depends_on:
       migrate: { condition: service_completed_successfully }
 
@@ -64,3 +67,4 @@ services:
 volumes:
   pgdata:
   blobs:
+  models:

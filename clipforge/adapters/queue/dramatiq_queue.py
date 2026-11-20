@@ -32,9 +32,23 @@ def all_queue_names(base: str) -> list[str]:
     return [queue_name(base, p) for p in Priority]
 
 
-def make_broker(redis_url: str) -> RedisBroker:
+def make_broker(
+    redis_url: str, *, install: bool = False, queue_bases: tuple[str, ...] = ()
+) -> RedisBroker:
+    """Create a Redis broker.
+
+    ``install=True`` (worker processes only) makes it Dramatiq's global broker, so actors bind
+    to it. Producers (API/CLI) must not install, because replacing the global broker inside a
+    running worker breaks it. ``queue_bases`` declares every priority variant of each base
+    queue: a Dramatiq worker only consumes *declared* queues, and the dispatch actor itself
+    only declares ``default``.
+    """
     broker = RedisBroker(url=redis_url)  # type: ignore[no-untyped-call]
-    dramatiq.set_broker(broker)
+    for base in queue_bases:
+        for name in all_queue_names(base):
+            broker.declare_queue(name)
+    if install:
+        dramatiq.set_broker(broker)
     return broker
 
 

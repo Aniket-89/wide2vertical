@@ -45,3 +45,27 @@ def test_priority_maps_to_separate_queues() -> None:
     assert queue_name("default", Priority.HIGH) == "default_high"
     assert queue_name("default", Priority.NORMAL) == "default"
     assert set(all_queue_names("transcribe")) == {"transcribe", "transcribe_high", "transcribe_low"}
+
+
+def test_worker_broker_declares_all_queues_and_producer_does_not_install() -> None:
+    import dramatiq
+
+    from clipforge.adapters.queue.dramatiq_queue import make_broker
+    from clipforge.infra.registry import QUEUE_BASES
+
+    before = dramatiq.get_broker()
+    producer = make_broker("redis://127.0.0.1:1/0")
+    assert dramatiq.get_broker() is before  # producers never replace the global broker
+
+    worker = make_broker("redis://127.0.0.1:1/0", queue_bases=QUEUE_BASES)
+    declared = worker.get_declared_queues()
+    for q in (
+        "default",
+        "default_high",
+        "default_low",
+        "transcribe",
+        "transcribe_high",
+        "transcribe_low",
+    ):
+        assert q in declared
+    del producer

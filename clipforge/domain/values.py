@@ -115,3 +115,8 @@ class Principal:
     user_id: UserId
     workspace_id: WorkspaceId
     role: Role
+
+
+def normalise_handle(raw: str) -> str:
+    """Canonical channel handle: trimmed, no leading '@', lowercase."""
+    return raw.strip().lstrip("@").lower()

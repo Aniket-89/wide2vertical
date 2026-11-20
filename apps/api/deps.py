@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from clipforge.domain.values import Principal, Role, UserId, WorkspaceId
 from clipforge.infra.config import Settings, get_settings
 from clipforge.infra.db.session import session_factory
+from clipforge.infra.registry import Container, get_container
 
 
 def settings_dep() -> Settings:
@@ -59,3 +60,10 @@ def db_session() -> Iterator[Session]:
 
 
 SessionDep = Annotated[Session, Depends(db_session)]
+
+
+def container_dep() -> Container:
+    return get_container()
+
+
+ContainerDep = Annotated[Container, Depends(container_dep)]

@@ -1,0 +1,13 @@
+{
+  "_note": "SYNTHETIC: shape of yt-dlp's kick:vod info dict (trimmed). Replace with a recorded sample.",
+  "id": "0b7c7c3e-1f2a-4b5c-9d8e-112233445566",
+  "title": "late night stream",
+  "duration": 9876,
+  "uploader": "Somebody",
+  "uploader_id": "1234567",
+  "channel": "somebody",
+  "channel_id": "7654321",
+  "webpage_url": "https://kick.com/somebody/videos/0b7c7c3e-1f2a-4b5c-9d8e-112233445566",
+  "is_live": false,
+  "extractor": "kick:vod"
+}

@@ -22,13 +22,25 @@ def session_factory(url: str | None = None) -> sessionmaker[Session]:
 
 
 @contextmanager
-def session_scope(url: str | None = None) -> Iterator[Session]:
+def session_scope(url: str | None = None, *, commit_on_error: bool = False) -> Iterator[Session]:
+    """Commit on success, roll back on error.
+
+    ``commit_on_error=True`` is for pipeline stages: they write their outputs last, so on
+    failure the only pending writes are the job_run/audit records explaining the failure,
+    which must survive.
+    """
     session = session_factory(url)()
     try:
         yield session
         session.commit()
     except Exception:
-        session.rollback()
+        if commit_on_error:
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
+        else:
+            session.rollback()
         raise
     finally:
         session.close()

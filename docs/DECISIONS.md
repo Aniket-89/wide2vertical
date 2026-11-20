@@ -47,3 +47,72 @@ clean path is a manual YouTube Studio download, to be supported later by a `Loca
 A native Windows Redis 5.0 already listens on 127.0.0.1:6379 on the dev host, and it is too old
 for redis-py's RESP3 handshake. The Compose Redis is published on 6380; containers still use
 `redis:6379` internally.
+
+## ADR-0010 — Allowlist policy details (2026-11-20)
+`compliance.allowlist.decide` (pure, table-tested):
+- **Retired source → always refused, even with `--override`.** A takedown is a promise to the
+  creator, so nothing in the tool can bypass it. To undo, un-retire the source deliberately.
+- Not in the allowlist, or policy `unknown` → refused unless override (then processed, flagged
+  `videos.override_used`, and audit-logged as `ingest.override`).
+- `campaign` / `written_permission` without `required_credit_text` → refused unless override.
+  Those policies almost always mandate credit, so a missing credit is a setup error.
+- Every refusal is audit-logged as `ingest.refused`.
+
+## ADR-0011 — Persistence port for services (2026-11-20)
+Services may not import `infra`, so `IngestPipeline` talks to a `PipelineStore` Protocol
+(`ports/pipeline.py`). `SqlPipelineStore` implements it, and an `InMemoryPipelineStore` fake
+must pass the same contract tests (`tests/contract`).
+
+## ADR-0012 — Stage failures are committed, not rolled back (2026-11-20)
+Each stage writes its output as its last step, so if it raises, the only pending writes are
+the `job_runs` failure row and audit entries. CLI and worker use
+`session_scope(commit_on_error=True)` so failures stay visible in `GET /videos/{id}`.
+
+## ADR-0013 — `POST /videos` resolves synchronously, queues the heavy work (2026-11-20)
+Resolve + allowlist take ~1–3 s (one `yt-dlp -J`), so refusals come back immediately as 403
+with the reason. Fetch and transcription are queued (`pipeline.fetch` → `pipeline.transcribe`).
+Expected `PipelineError`s are recorded and not retried; unexpected exceptions use Dramatiq
+retries (3, exponential backoff).
+
+## ADR-0014 — Pin PyAV < 16 (2026-11-20)
+faster-whisper 1.2.1 calls `av.open(..., metadata_errors=...)`, which PyAV ≥ 16 removed. The real
+transcriber contract test caught it. Remove the pin when faster-whisper releases a fix.
+
+## ADR-0015 — Fetch audio only; full-video fetching deferred to M4 (2026-11-20)
+M1 downloads `bestaudio` only (spec §4.8). M4 will add window/proxy fetching to
+`MediaFetcher`; for Twitch HLS, range fetching is unreliable and a low-res proxy is the
+fallback.
+
+## ADR-0016 — Twitch HLS is downloaded with ffmpeg (2026-11-20)
+yt-dlp's native HLS downloader fails on Twitch VOD fMP4 playlists ("Initialization fragment
+found after media fragments"). When ffmpeg is on PATH (always, in the Docker image),
+`YtDlpFetcher` passes `--downloader m3u8:ffmpeg`. Found during the real M1 Twitch run.
+
+## ADR-0017 — Worker declares every queue; producers never install a broker (2026-11-20)
+A Dramatiq worker consumes only *declared* queues, and the single dispatch actor declares only
+`default`. `build_worker_broker` therefore declares every priority variant of every queue base
+(`QUEUE_BASES`). Producer brokers (API, CLI, and the worker enqueueing follow-up jobs) are
+created with `install=False`, so they never replace the worker's global broker. Found during the
+real M1 Twitch run: the transcribe job sat in Redis unconsumed.
+
+## ADR-0018 — Fetched media is length-verified (2026-11-20)
+During the real Twitch run, ffmpeg's HLS demuxer stopped after 685 s of a 3,024 s VOD (a
+transient network error) and still exited 0. The pipeline stored the truncated file and called
+it a success. Now:
+- `YtDlpFetcher` measures the file with ffprobe and retries (up to `retries`) when it is under
+  `MIN_COMPLETENESS` (98%) of the platform-reported duration, then fails.
+- `IngestPipeline.fetch_audio` independently refuses to store a short file, whichever fetcher
+  produced it.
+Known gap: `video_assets` doesn't store duration, so an asset cached *before* this guard isn't
+re-verified. Add a `duration_s` column at the next migration.
+
+## ADR-0019 — ffmpeg HLS with keepalive off; chunked fetching rejected (2026-11-20)
+Root cause of the truncation in ADR-0018: TLS decryption errors on the dev network made
+ffmpeg's HLS keepalive reconnect end the stream early (exit 0). Passing
+`-http_persistent 0` (a fresh connection per segment) gave complete downloads on every
+test run, where 4 of 5 attempts had truncated before. The length check and whole-file retry from
+ADR-0018 stay as the safety net.
+Rejected: chunked `--download-sections` fetching. ffmpeg 5.1 mis-seeks in Twitch playlists
+with mid-stream `EXT-X-MAP` changes and returns empty sections. If truncation recurs on
+real hosts, the next step is a segment-level HLS downloader with per-segment retries
+(Debian's ffmpeg 5.1 also lacks `seg_max_retry`, which arrived in 6.0).
