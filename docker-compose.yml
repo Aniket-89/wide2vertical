@@ -16,7 +16,7 @@ services:
   postgres:
     image: postgres:16-alpine
     environment: { POSTGRES_USER: clipforge, POSTGRES_PASSWORD: clipforge, POSTGRES_DB: clipforge }
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]  # loopback only
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U clipforge"]
@@ -25,7 +25,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["6380:6379"]  # host 6379 is often taken by a native Redis on Windows
+    ports: ["127.0.0.1:6380:6379"]  # host 6379 is often taken by a native Redis on Windows
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -39,7 +39,7 @@ services:
   api:
     <<: *python
     command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
 

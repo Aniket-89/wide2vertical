@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6380/0"
 
     # Auth seam: one static token in the MVP.
-    api_token: SecretStr = SecretStr("change-me")
+    api_token: SecretStr = SecretStr("")  # required outside tests; see validator
 
     # Single-tenant MVP: the seeded workspace/user. Ids are fixed so seed is idempotent.
     default_workspace_id: str = "01936f00-0000-7000-8000-000000000001"
@@ -53,6 +53,17 @@ class Settings(BaseSettings):
 
     # SaaS stubs
     per_workspace_max_concurrent_jobs: int = Field(default=4, ge=1)
+
+    @model_validator(mode="after")
+    def _refuse_weak_token(self) -> Settings:
+        """Fail closed: never start with an empty/placeholder/short API token outside tests."""
+        token = self.api_token.get_secret_value()
+        if self.env != "test" and (len(token) < 24 or token.startswith("change-me")):
+            raise ValueError(
+                "CLIPFORGE_API_TOKEN must be set to a random string of >= 24 chars "
+                '(e.g. python -c "import secrets; print(secrets.token_urlsafe(32))")'
+            )
+        return self
 
 
 @lru_cache

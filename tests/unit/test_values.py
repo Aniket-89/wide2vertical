@@ -38,3 +38,14 @@ def test_new_id_is_uuid7_and_time_ordered() -> None:
     a, b = new_id(), new_id()
     assert a.version == 7
     assert a < b
+
+
+@pytest.mark.parametrize("token", ["", "change-me", "change-me-to-a-long-random-string", "short"])
+def test_settings_refuse_weak_api_token_outside_tests(token: str) -> None:
+    from pydantic import ValidationError
+
+    from clipforge.infra.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(env="prod", api_token=token, _env_file=None)  # type: ignore[call-arg, arg-type]
+    Settings(env="test", api_token=token, _env_file=None)  # type: ignore[call-arg, arg-type]
