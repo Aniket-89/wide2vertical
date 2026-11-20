@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from clipforge.domain.values import (
@@ -63,6 +63,17 @@ class SourceAdmin:
                 **fields,
             )
         )
+        # Backfill: videos ingested via override before this channel was allowlisted.
+        res = self.session.execute(
+            update(m.Video)
+            .where(
+                m.Video.workspace_id == self.workspace_id,
+                m.Video.platform == platform.value,
+                m.Video.source_id.is_(None),
+                m.Video.channel_handle == handle,
+            )
+            .values(source_id=src.id)
+        )
         self.audit.record(
             "source.added",
             "source",
@@ -71,6 +82,7 @@ class SourceAdmin:
             platform=platform.value,
             channel=handle,
             policy=clip_policy.value,
+            videos_linked=int(getattr(res, "rowcount", 0) or 0),
         )
         return src
 
@@ -105,9 +117,19 @@ class SourceAdmin:
         now = datetime.now(UTC)
         src.status, src.retired_at = SourceStatus.RETIRED.value, now
 
-        video_ids = select(m.Video.id).where(
-            m.Video.workspace_id == self.workspace_id, m.Video.source_id == src.id
+        # Match by source_id AND by channel, so videos ingested via override are covered too.
+        channel_match = [m.Video.channel_handle == src.channel_handle]
+        if src.channel_id:
+            channel_match.append(m.Video.channel_id == src.channel_id)
+        video_filter = (
+            m.Video.workspace_id == self.workspace_id,
+            or_(
+                m.Video.source_id == src.id,
+                and_(m.Video.platform == src.platform, or_(*channel_match)),
+            ),
         )
+        self.session.execute(update(m.Video).where(*video_filter).values(status="source_retired"))
+        video_ids = select(m.Video.id).where(*video_filter)
         cand_ids = select(m.Candidate.id).where(
             m.Candidate.workspace_id == self.workspace_id, m.Candidate.video_id.in_(video_ids)
         )

@@ -10,6 +10,8 @@ from pathlib import Path
 import structlog
 
 from clipforge.adapters.proc import ProcError, run, safe_url_arg
+from clipforge.adapters.resolvers.urls import EXTRACTOR
+from clipforge.domain.values import Platform
 from clipforge.ports.pipeline import MIN_COMPLETENESS, FetchedFile, FetchFailed, ResolvedVideo
 
 log = structlog.get_logger(__name__)
@@ -58,13 +60,15 @@ class YtDlpFetcher:
             shutil.which("ffmpeg") is not None if hls_via_ffmpeg is None else hls_via_ffmpeg
         )
 
-    def build_args(self, url: str, workdir: Path) -> list[str]:
+    def build_args(self, url: str, workdir: Path, platform: Platform | None = None) -> list[str]:
         args = [
             sys.executable, "-m", "yt_dlp",
             "-f", "bestaudio/best",
             "--no-playlist", "--no-part", "--no-progress", "--quiet", "--no-warnings",
             "--retries", str(self.retries), "--fragment-retries", str(self.retries),
         ]  # fmt: skip
+        if platform is not None:
+            args += ["--use-extractors", EXTRACTOR[platform]]
         if self.hls_via_ffmpeg:
             # ffmpeg's HLS keepalive reconnect can silently end the stream after a TLS error;
             # a fresh connection per segment avoids it (ADR-0019).
@@ -80,7 +84,7 @@ class YtDlpFetcher:
         for old in workdir.glob("audio.*"):
             old.unlink()
         try:
-            run(self.build_args(video.url, workdir), timeout_s=self.timeout_s)
+            run(self.build_args(video.url, workdir, video.platform), timeout_s=self.timeout_s)
         except ProcError as exc:
             raise FetchFailed(str(exc)) from exc
         files = sorted(p for p in workdir.glob("audio.*") if p.is_file())

@@ -152,5 +152,5 @@ def test_untrusted_webpage_url_is_ignored() -> None:
     from clipforge.domain.values import Platform
 
     info = {"id": "v1", "uploader_id": "s", "webpage_url": "--exec=evil"}
-    rv = info_to_resolved(Platform.TWITCH, "https://www.twitch.tv/videos/1", info)
+    rv = info_to_resolved(Platform.TWITCH, "https://m.twitch.tv/videos/1", info)
     assert rv.url == "https://www.twitch.tv/videos/1"

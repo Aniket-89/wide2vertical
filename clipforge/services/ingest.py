@@ -16,7 +16,7 @@ from uuid import UUID
 
 from clipforge.compliance.allowlist import SourceFacts, Verdict, decide
 from clipforge.domain.events import StageCompleted, StageFailed, VideoIngested
-from clipforge.domain.values import BlobKey, JobStatus, Stage
+from clipforge.domain.values import BlobKey, JobStatus, SourceStatus, Stage
 from clipforge.ports.infra import BlobStore, EventBus, QuotaService
 from clipforge.ports.pipeline import (
     MIN_COMPLETENESS,
@@ -50,6 +50,15 @@ class IngestResult:
     verdict: Verdict
     reason: str
     created: bool
+
+
+def _complete(measured: float | None, expected: float | None) -> bool:
+    """Is a cached asset complete? A *measured* short asset is not, so it gets re-fetched.
+    Unknown duration (no ffprobe on this host) is trusted; otherwise every run would
+    re-download."""
+    if not expected or measured is None:
+        return True
+    return measured >= MIN_COMPLETENESS * expected
 
 
 def sha256_text(*parts: str) -> str:
@@ -113,6 +122,16 @@ class IngestPipeline:
             raise PipelineError(f"video {video_id} not found in this workspace")
         return video
 
+    def _require_not_retired(self, video: VideoRecord, stage: Stage) -> None:
+        """Takedowns apply to work already queued: re-check before every heavy stage."""
+        src = self.store.source_for_video(video)
+        if src is not None and src.status is SourceStatus.RETIRED:
+            self.store.audit(
+                "pipeline.blocked", "video", video.id, stage=stage.value, reason="source retired"
+            )
+            self.store.set_video_status(video.id, "source_retired")
+            raise SourceNotAllowed("source is retired (takedown); processing stopped")
+
     # ------------------------------------------------------------ stage 1: ingest
     def ingest(self, url: str, *, override: bool = False) -> IngestResult:
         rv = self._resolver_for(url).resolve(url)
@@ -164,9 +183,14 @@ class IngestPipeline:
     # ------------------------------------------------------------ stage 2: fetch audio
     def fetch_audio(self, video_id: UUID) -> AssetRecord:
         video = self._require_video(video_id)
+        self._require_not_retired(video, Stage.FETCH)
         with self._stage(video.id, Stage.FETCH, sha256_text(video.url, "audio")) as skip:
             cached = self.store.find_asset(video.id, "audio")
-            if cached is not None and self.blobs.exists(cached.blob_key):
+            if (
+                cached is not None
+                and self.blobs.exists(cached.blob_key)
+                and _complete(cached.duration_s, video.duration_s)
+            ):
                 skip[0] = True
                 return cached
 
@@ -184,7 +208,7 @@ class IngestPipeline:
                     self.store.workspace_id, "videos", str(video.id), f"audio.{f.ext}"
                 )
                 written = self.blobs.put(key, f.path)
-            asset = AssetRecord(blob_key=key, content_hash=f.content_hash, bytes=written)
+            asset = AssetRecord(key, f.content_hash, written, duration_s=f.duration_s)
             self.store.save_asset(video.id, "audio", asset)
             self.store.record_usage("storage_bytes", written, "bytes", video.id, asset="audio")
             return asset
@@ -193,6 +217,7 @@ class IngestPipeline:
     def transcribe(self, video_id: UUID) -> bool:
         """Returns True if a new transcript was produced, False if the cache was reused."""
         video = self._require_video(video_id)
+        self._require_not_retired(video, Stage.TRANSCRIBE)
         audio = self.store.find_asset(video.id, "audio")
         if audio is None:
             raise PipelineError("no audio asset; run the fetch stage first")

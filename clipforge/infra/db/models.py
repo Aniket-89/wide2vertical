@@ -159,6 +159,8 @@ class Video(WorkspaceScoped, SoftDelete, Base):
     url: Mapped[str] = mapped_column(Text)
     platform: Mapped[str] = mapped_column(String(20))
     external_id: Mapped[str] = mapped_column(String(200))
+    channel_handle: Mapped[str | None] = mapped_column(String(200), index=True)
+    channel_id: Mapped[str | None] = mapped_column(String(200))
     title: Mapped[str] = mapped_column(Text, default="")
     duration_s: Mapped[float | None] = mapped_column(Float)
     recorded_at: Mapped[datetime | None] = mapped_column(TS)
@@ -175,6 +177,7 @@ class VideoAsset(WorkspaceScoped, Base):
     blob_key: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64))
     bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    duration_s: Mapped[float | None] = mapped_column(Float)
     expires_at: Mapped[datetime | None] = mapped_column(TS)
     __table_args__ = (UniqueConstraint("video_id", "kind", "content_hash"),)
 

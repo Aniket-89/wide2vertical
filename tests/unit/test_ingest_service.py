@@ -210,3 +210,45 @@ def test_truncated_fetch_is_rejected_not_stored(rig: Rig) -> None:
     rig.fetcher.duration_s = 59.9  # within tolerance
     rig.p.fetch_audio(vid)
     assert rig.store.find_asset(vid, "audio") is not None
+
+
+def test_takedown_between_ingest_and_fetch_stops_processing(rig: Rig) -> None:
+    src = rig.store.add_source(Platform.YOUTUBE, "streamer", ClipPolicy.OPEN_POLICY)
+    vid = rig.p.ingest(YT).video.id
+    rig.store.retire(src.id)  # creator asks for takedown while the fetch job is queued
+    with pytest.raises(SourceNotAllowed, match="retired"):
+        rig.p.fetch_audio(vid)
+    assert rig.fetcher.calls == 0
+    assert rig.store.videos[vid].status == "source_retired"
+    assert rig.store.audits[-1]["action"] == "pipeline.blocked"
+
+
+def test_takedown_between_fetch_and_transcribe_stops_processing(rig: Rig) -> None:
+    src = rig.store.add_source(Platform.YOUTUBE, "streamer", ClipPolicy.OPEN_POLICY)
+    vid = rig.p.ingest(YT).video.id
+    rig.p.fetch_audio(vid)
+    rig.store.retire(src.id)
+    with pytest.raises(SourceNotAllowed):
+        rig.p.transcribe(vid)
+    assert rig.transcriber.calls == 0
+
+
+def test_override_video_blocked_once_channel_is_allowlisted_then_retired(rig: Rig) -> None:
+    vid = rig.p.ingest(YT, override=True).video.id  # no source yet
+    src = rig.store.add_source(Platform.YOUTUBE, "streamer", ClipPolicy.OPEN_POLICY)
+    rig.store.retire(src.id)
+    with pytest.raises(SourceNotAllowed):
+        rig.p.fetch_audio(vid)  # matched via the video's stored channel
+
+
+def test_measured_short_cached_asset_is_refetched(rig: Rig) -> None:
+    rig.allow()
+    rig.fetcher.duration_s = 60.0
+    vid = rig.p.run_all(YT).video.id
+    asset = rig.store.find_asset(vid, "audio")
+    assert asset is not None
+    from dataclasses import replace
+
+    rig.store.assets[(vid, "audio")] = replace(asset, duration_s=10.0)  # legacy truncated asset
+    rig.p.fetch_audio(vid)
+    assert rig.fetcher.calls == 2

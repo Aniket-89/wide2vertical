@@ -116,3 +116,34 @@ Rejected: chunked `--download-sections` fetching. ffmpeg 5.1 mis-seeks in Twitch
 with mid-stream `EXT-X-MAP` changes and returns empty sections. If truncation recurs on
 real hosts, the next step is a segment-level HLS downloader with per-segment retries
 (Debian's ffmpeg 5.1 also lacks `seg_max_retry`, which arrived in 6.0).
+
+## ADR-0020 — Canonical URLs and pinned yt-dlp extractors (2026-11-20)
+Security review: Python's `urlparse` and yt-dlp can parse odd URLs differently (userinfo,
+backslashes, ports). A URL that looks like YouTube to our allowlist check could reach another
+host through yt-dlp's generic extractor (an allowlist bypass and SSRF). Now:
+- `parse_video_url` rejects whitespace, control chars, backslashes, `@`, ports, credentials
+  and over-long input.
+- Downstream tools only ever see a canonical URL rebuilt from the parsed ID
+  (`https://www.youtube.com/watch?v=<id>`, `https://www.twitch.tv/videos/<id>`,
+  `https://kick.com/<slug>/videos/<id>`). `ResolvedVideo.url` is that canonical URL, never
+  the raw input or yt-dlp's `webpage_url`.
+- Every yt-dlp call passes `--use-extractors youtube|twitch:vod|kick:vod` and `--` before
+  the URL, so the generic extractor can't be reached.
+- `kick.com/video/<id>` is no longer accepted (yt-dlp's `kick:vod` requires the channel slug).
+
+## ADR-0021 — Takedowns apply to in-flight work and override-ingested videos (2026-11-20)
+Security review found two gaps. (1) A source retired after ingest still had its queued fetch
+and transcribe run. (2) `retire()` matched videos only by `source_id`, so videos ingested via
+`--override` before the channel was allowlisted escaped the takedown. Now:
+- `videos.channel_handle` / `channel_id` are stored at ingest (migration `102c4b9c91eb`).
+- `fetch_audio` and `transcribe` re-check the source via `PipelineStore.source_for_video`
+  (by `source_id`, else by stored channel). A retired source stops the stage, audit-logs
+  `pipeline.blocked`, and sets the video to `source_retired`.
+- `SourceAdmin.add` backfills `source_id` on matching override videos. `retire()` matches by
+  `source_id` *or* platform+channel, marks those videos `source_retired`, and hides their
+  clips. Stored audio and transcripts are kept (the spec says hide), not deleted.
+
+## ADR-0018 addendum (2026-11-20)
+`video_assets.duration_s` now stores the measured length, and a cached asset that measured
+short is re-fetched. Unknown duration (no ffprobe on the host) is trusted, so runs don't
+re-download every time.

@@ -30,6 +30,17 @@ from clipforge.ports.pipeline import (
 )
 
 
+def _source_record(s: m.Source) -> SourceRecord:
+    return SourceRecord(
+        id=s.id,
+        platform=Platform(s.platform),
+        channel_handle=s.channel_handle,
+        clip_policy=ClipPolicy(s.clip_policy),
+        status=SourceStatus(s.status),
+        required_credit_text=s.required_credit_text,
+    )
+
+
 def _video_record(v: m.Video) -> VideoRecord:
     return VideoRecord(
         id=v.id,
@@ -40,6 +51,8 @@ def _video_record(v: m.Video) -> VideoRecord:
         external_id=v.external_id,
         status=v.status,
         duration_s=v.duration_s,
+        channel_handle=v.channel_handle,
+        channel_id=v.channel_id,
     )
 
 
@@ -69,16 +82,7 @@ class SqlPipelineStore:
             or_(*conds),
         )
         s = self.session.scalars(stmt).first()
-        if s is None:
-            return None
-        return SourceRecord(
-            id=s.id,
-            platform=Platform(s.platform),
-            channel_handle=s.channel_handle,
-            clip_policy=ClipPolicy(s.clip_policy),
-            status=SourceStatus(s.status),
-            required_credit_text=s.required_credit_text,
-        )
+        return _source_record(s) if s else None
 
     # -- videos
     def _video_by_external(self, platform: Platform, external_id: str) -> m.Video | None:
@@ -102,6 +106,7 @@ class SqlPipelineStore:
                 status="ingested",
             )
         v.url, v.title, v.duration_s = rv.url, rv.title, rv.duration_s
+        v.channel_handle, v.channel_id = rv.channel_handle, rv.channel_id
         v.source_id = source_id
         v.override_used = v.override_used or override_used
         v.deleted_at = None
@@ -113,6 +118,15 @@ class SqlPipelineStore:
     def get_video(self, video_id: UUID) -> VideoRecord | None:
         v = self._videos.get(video_id)
         return _video_record(v) if v else None
+
+    def source_for_video(self, video: VideoRecord) -> SourceRecord | None:
+        if video.source_id is not None:
+            s = self.session.get(m.Source, video.source_id)
+            if s is not None and s.workspace_id == self.workspace_id:
+                return _source_record(s)
+        if video.channel_handle:
+            return self.find_source(video.platform, video.channel_handle, video.channel_id)
+        return None
 
     def set_video_status(self, video_id: UUID, status: str) -> None:
         self.session.execute(
@@ -133,7 +147,9 @@ class SqlPipelineStore:
             .order_by(m.VideoAsset.id.desc())
         )
         a = self.session.scalars(stmt).first()
-        return AssetRecord(BlobKey(a.blob_key), a.content_hash, a.bytes) if a else None
+        if a is None:
+            return None
+        return AssetRecord(BlobKey(a.blob_key), a.content_hash, a.bytes, a.duration_s)
 
     def save_asset(self, video_id: UUID, kind: str, asset: AssetRecord) -> None:
         stmt = select(m.VideoAsset).where(
@@ -151,7 +167,11 @@ class SqlPipelineStore:
                 content_hash=asset.content_hash,
             )
             self.session.add(row)
-        row.blob_key, row.bytes = asset.blob_key.value, asset.bytes
+        row.blob_key, row.bytes, row.duration_s = (
+            asset.blob_key.value,
+            asset.bytes,
+            asset.duration_s,
+        )
         self.session.flush()
 
     # -- transcripts

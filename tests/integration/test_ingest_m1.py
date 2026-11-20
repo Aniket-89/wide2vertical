@@ -24,6 +24,7 @@ from clipforge.infra.db import models as m
 from clipforge.infra.db.sources import SourceAdmin
 from clipforge.infra.registry import Container
 from clipforge.infra.seed import seed
+from clipforge.services.ingest import SourceNotAllowed
 
 pytestmark = pytest.mark.db
 
@@ -185,3 +186,35 @@ def test_api_rejects_foreign_scoring_profile(client: TestClient, seeded: Session
     )
     assert r.status_code == 404
     assert seeded.scalars(select(m.Video)).first() is None
+
+
+def test_add_source_backfills_and_retire_covers_override_videos(
+    seeded: Session, container: Container
+) -> None:
+    p = container.ingest_pipeline(seeded, WS)
+    vid = p.ingest(YT, override=True).video.id  # ingested before the channel was allowlisted
+    video = seeded.get(m.Video, vid)
+    assert video is not None and video.source_id is None
+    assert video.channel_handle == "streamer"
+
+    admin = SourceAdmin(seeded, WS)
+    src = admin.add(Platform.YOUTUBE, "@Streamer", ClipPolicy.OPEN_POLICY)
+    seeded.refresh(video)
+    assert video.source_id == src.id  # backfilled
+
+    # an override video from the same channel that never got linked is still covered
+    seeded.execute(m.Video.__table__.update().where(m.Video.id == vid).values(source_id=None))
+    prof = seeded.scalars(select(m.ScoringProfile.id)).first()
+    cand = m.Candidate(
+        workspace_id=WS, video_id=vid, scoring_profile_id=prof, start_s=1, end_s=30, score=0.5
+    )
+    seeded.add(cand)
+    seeded.flush()
+    seeded.add(m.Clip(workspace_id=WS, candidate_id=cand.id, start_s=1, end_s=30))
+    seeded.flush()
+
+    assert admin.retire(src.id) == 1
+    seeded.refresh(video)
+    assert video.status == "source_retired"
+    with pytest.raises(SourceNotAllowed):
+        p.fetch_audio(vid)

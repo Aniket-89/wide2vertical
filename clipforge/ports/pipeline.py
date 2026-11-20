@@ -127,6 +127,8 @@ class VideoRecord:
     external_id: str
     status: str
     duration_s: float | None
+    channel_handle: str | None = None
+    channel_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +136,7 @@ class AssetRecord:
     blob_key: BlobKey
     content_hash: str
     bytes: int
+    duration_s: float | None = None  # measured; used to re-verify cached assets
 
 
 class PipelineStore(Protocol):
@@ -152,6 +155,11 @@ class PipelineStore(Protocol):
         ...
 
     def get_video(self, video_id: UUID) -> VideoRecord | None: ...
+
+    def source_for_video(self, video: VideoRecord) -> SourceRecord | None:
+        """The video's source: by source_id, else by its stored channel (covers videos
+        ingested via override before the channel was allowlisted)."""
+        ...
 
     def set_video_status(self, video_id: UUID, status: str) -> None: ...
 

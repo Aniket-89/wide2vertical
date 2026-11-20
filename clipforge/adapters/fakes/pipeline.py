@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -177,15 +177,13 @@ class InMemoryPipelineStore:
     ) -> tuple[VideoRecord, bool]:
         for v in self.videos.values():
             if v.platform is rv.platform and v.external_id == rv.external_id:
-                nv = VideoRecord(
-                    v.id,
-                    v.workspace_id,
-                    source_id,
-                    v.platform,
-                    rv.url,
-                    v.external_id,
-                    v.status,
-                    rv.duration_s,
+                nv = replace(
+                    v,
+                    source_id=source_id,
+                    url=rv.url,
+                    duration_s=rv.duration_s,
+                    channel_handle=rv.channel_handle,
+                    channel_id=rv.channel_id,
                 )
                 self.videos[v.id] = nv
                 return nv, False
@@ -198,6 +196,8 @@ class InMemoryPipelineStore:
             rv.external_id,
             "ingested",
             rv.duration_s,
+            rv.channel_handle,
+            rv.channel_id,
         )
         self.videos[v.id] = v
         return v, True
@@ -205,18 +205,22 @@ class InMemoryPipelineStore:
     def get_video(self, video_id: UUID) -> VideoRecord | None:
         return self.videos.get(video_id)
 
+    def source_for_video(self, video: VideoRecord) -> SourceRecord | None:
+        for s in self.sources:
+            if video.source_id is not None and s.rec.id == video.source_id:
+                return s.rec
+        if video.channel_handle:
+            return self.find_source(video.platform, video.channel_handle, video.channel_id)
+        return None
+
+    def retire(self, source_id: UUID) -> None:
+        """Test helper: mark a source retired (takedown)."""
+        for i, s in enumerate(self.sources):
+            if s.rec.id == source_id:
+                self.sources[i] = _Source(replace(s.rec, status=SourceStatus.RETIRED), s.channel_id)
+
     def set_video_status(self, video_id: UUID, status: str) -> None:
-        v = self.videos[video_id]
-        self.videos[video_id] = VideoRecord(
-            v.id,
-            v.workspace_id,
-            v.source_id,
-            v.platform,
-            v.url,
-            v.external_id,
-            status,
-            v.duration_s,
-        )
+        self.videos[video_id] = replace(self.videos[video_id], status=status)
 
     def find_asset(self, video_id: UUID, kind: str) -> AssetRecord | None:
         return self.assets.get((video_id, kind))

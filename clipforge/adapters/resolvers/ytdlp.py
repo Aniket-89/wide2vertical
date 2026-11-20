@@ -11,18 +11,9 @@ import sys
 from typing import Any, ClassVar
 
 from clipforge.adapters.proc import ProcError, run, safe_url_arg
-from clipforge.adapters.resolvers.urls import normalise_handle, parse_video_url
+from clipforge.adapters.resolvers.urls import EXTRACTOR, normalise_handle, parse_video_url
 from clipforge.domain.values import Platform
 from clipforge.ports.pipeline import ResolvedVideo, ResolveFailed, UnsupportedUrl
-
-
-def _trusted_url(candidate: object, platform: Platform) -> str | None:
-    """yt-dlp's webpage_url is remote data; keep it only if it parses as a supported VOD
-    URL for the same platform."""
-    if not isinstance(candidate, str):
-        return None
-    parsed = parse_video_url(candidate)
-    return candidate if parsed is not None and parsed.platform is platform else None
 
 
 def info_to_resolved(platform: Platform, url: str, info: dict[str, Any]) -> ResolvedVideo:
@@ -36,6 +27,10 @@ def info_to_resolved(platform: Platform, url: str, info: dict[str, Any]) -> Reso
         handle = info.get("channel") or info.get("uploader_id") or info.get("uploader") or ""
     if not handle:
         raise ResolveFailed(f"could not determine channel for {url}")
+    parsed = parse_video_url(url)
+    if parsed is None or parsed.platform is not platform:
+        raise ResolveFailed(f"not a supported {platform.value} VOD URL: {url}")
+    canonical = parsed.canonical_url
     ext_id = str(info.get("id") or "")
     if not ext_id:
         raise ResolveFailed(f"yt-dlp returned no id for {url}")
@@ -44,7 +39,7 @@ def info_to_resolved(platform: Platform, url: str, info: dict[str, Any]) -> Reso
     duration = info.get("duration")
     return ResolvedVideo(
         platform=platform,
-        url=_trusted_url(info.get("webpage_url"), platform) or url,
+        url=canonical,  # never yt-dlp's webpage_url (remote data) nor the raw input
         external_id=ext_id,
         channel_handle=normalise_handle(str(handle)),
         channel_id=info.get("channel_id"),
@@ -66,8 +61,10 @@ class YtDlpResolver:
         return p is not None and p.platform is self.platform
 
     def resolve(self, url: str) -> ResolvedVideo:
-        if not self.supports(url):
+        parsed = parse_video_url(url)
+        if parsed is None or parsed.platform is not self.platform:
             raise UnsupportedUrl(url)
+        canonical = parsed.canonical_url
         args = [
             sys.executable,
             "-m",
@@ -76,15 +73,17 @@ class YtDlpResolver:
             "--no-playlist",
             "--skip-download",
             "--no-warnings",
+            "--use-extractors",
+            EXTRACTOR[self.platform],
             "--",
-            safe_url_arg(url),
+            safe_url_arg(canonical),
         ]
         try:
             out = run(args, timeout_s=self.timeout_s).stdout
             info = json.loads(out)
         except (ProcError, json.JSONDecodeError) as exc:
             raise ResolveFailed(str(exc)) from exc
-        return info_to_resolved(self.platform, url, info)
+        return info_to_resolved(self.platform, canonical, info)
 
 
 class YouTubeResolver(YtDlpResolver):
