@@ -125,6 +125,9 @@ class CandidateOut(BaseModel):
     components: dict[str, Any]
     reason: str
     status: str
+    title_suggestions: list[str]
+    hook_text: str
+    judge: dict[str, Any] | None
 
 
 @router.get("/{video_id}/candidates", response_model=list[CandidateOut])
@@ -134,7 +137,8 @@ def list_video_candidates(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[dict[str, Any]]:
-    """Ranked candidates (best first) with per-signal component scores."""
+    """Ranked candidates (best first) with per-signal components, the LLM judge's verdict
+    (when enabled), title suggestions and hook text."""
     if VideoRepo(session, principal.workspace_id).get(video_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "video not found")
     rows = SqlPipelineStore(session, principal.workspace_id).list_candidates(video_id, limit=limit)
@@ -148,6 +152,9 @@ def list_video_candidates(
             "components": c.components,
             "reason": c.reason,
             "status": c.status,
+            "title_suggestions": list(c.title_suggestions),
+            "hook_text": c.hook_text,
+            "judge": c.judge,
         }
         for c in rows
     ]

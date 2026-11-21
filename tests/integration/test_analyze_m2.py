@@ -165,3 +165,39 @@ def test_replay_harness_on_labels_fixture(
     r3 = evaluate_at_k(ranked, item["good_moments_s"], 3, item["tolerance_s"])
     assert (r3.precision, r3.recall) == (1.0, 1.0)
     assert count(db, m.Candidate) == 0  # harness never writes candidates
+
+
+# ---------------------------------------------------------------- M3: judge against Postgres
+def test_judge_persists_verdicts_and_api_shows_them(
+    db: Session, container: Container, video_id: UUID
+) -> None:
+    from clipforge.adapters.fakes.pipeline import FakeJudge
+
+    container.judge_override = FakeJudge(
+        lambda it: 0.95 if it.start_s <= 1500 <= it.end_s else 0.05
+    )
+    prof = db.scalars(select(m.ScoringProfile)).first()
+    assert prof is not None
+    res = container.analyze_pipeline(db, WS).analyze(
+        video_id, weight_overrides={"llm_moment_score": 3.0}
+    )
+    assert res.judge_status.startswith("ok:")
+
+    rows = db.scalars(select(m.Candidate).order_by(m.Candidate.rank)).all()
+    assert [c.rank for c in rows] == list(range(1, len(rows) + 1))
+    assert rows[0].start_s <= 1500 <= rows[0].end_s
+    assert rows[0].title_suggestions and rows[0].hook_text and rows[0].judge
+    usage = set(db.scalars(select(m.UsageEvent.kind)))
+    assert {"llm_tokens_in", "llm_tokens_out", "llm_cost_usd_est"} <= usage
+
+    app = create_app()
+
+    def _session() -> Iterator[Session]:
+        yield db
+
+    app.dependency_overrides[db_session] = _session
+    app.dependency_overrides[container_dep] = lambda: container
+    body = TestClient(app).get(f"/api/v1/videos/{video_id}/candidates", headers=AUTH).json()
+    assert body[0]["title_suggestions"] and body[0]["hook_text"]
+    assert body[0]["judge"]["model"] == "fake-judge"
+    assert "llm_moment_score" in body[0]["components"]

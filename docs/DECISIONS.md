@@ -195,3 +195,41 @@ import-linter caught the CLI importing the adapter directly.
 inserts the new ranking, skipping windows identical to reviewed ones. Approve/reject decisions
 are training data (`feedback_events` from M4) and must survive re-scoring. The replay harness
 (`clipforge eval`) runs with `persist=False` and never touches candidates.
+
+## ADR-0027 — LLM judge: cheap model, structured outputs, bounded influence (2026-11-21)
+- **Model:** `claude-haiku-5-5` (the spec asks for a cheap scoring model; $0.10 / $0.50 per
+  MTok). Configurable via `CLIPFORGE_LLM_MODEL`.
+- **Request:** `output_config.effort: "low"` (short classification work) plus
+  `output_config.format` with a strict JSON schema; Pydantic then enforces ranges the schema
+  can't express. No `temperature` (rejected by current models), no assistant prefill (400). The
+  system prompt is frozen and marked cacheable.
+- **Failures** (timeout, 429 after the SDK's retries, refusal, `max_tokens`, invalid output)
+  become `JudgeUnavailable` *per batch*. Those windows keep their signal score. If every batch
+  fails, the `judge` stage is recorded FAILED (video status `judge_failed`) but the candidates
+  stay usable, so the pipeline degrades and doesn't stop.
+- **Blending:** `final = (1 − w)·signal + w·overall`, with `w = llm_moment_score / (that +
+  raw weights of the signals actually used)` (≈0.21 by default, ≈0.36 without chat). The judge
+  re-orders; it can't fabricate a candidate the signals never proposed.
+- **Off by default:** `AnthropicJudge` is built only when `ENABLE_LLM_JUDGE=true` *and* a key
+  is set (paid service, spec §0.6); otherwise `NullJudge`.
+
+## ADR-0028 — Judge cost control (2026-11-21)
+Only the top `judge_top_n_per_hour` (profile param, default 30) pending windows per video
+hour are judged, hard-capped at `JUDGE_MAX_WINDOWS_PER_VIDEO` (150), in batches of
+`JUDGE_BATCH_SIZE` (8) per request. Each window sends only its own transcript (≤2,000 chars) plus
+its signal components, never the full transcript. Verdicts are cached in the BlobStore under
+`ws/<ws>/judge-cache/` keyed by sha256(prompt_id, model, transcript, duration, hints), so
+re-analysis with unchanged windows costs $0. Every call writes `llm_tokens_in`,
+`llm_tokens_out` (with cache read/write counts) and `llm_cost_usd_est` to `usage_events`.
+Rough cost: a 1-hour VOD → 30 windows → 4 requests of ~3–4K input and ~1.5K output tokens,
+≈ $0.005 per hour of video at Haiku 5.5 prices. The replay harness runs the judge only
+with `--with-judge`.
+The cache lives in the BlobStore rather than a new table because the data model is frozen
+after M2 without owner approval.
+
+## ADR-0029 — Prompts are versioned files with a fingerprint check (2026-11-21)
+`clipforge/prompts/<id>.md` is the single source of truth; `docs/PROMPTS.md` indexes each id
+with a 12-char content fingerprint, and a test fails if they drift apart. Released prompts are
+never edited; a change means `…v2`. Each stored verdict records `prompt_id` and `model`.
+Transcripts are treated as untrusted third-party data: they're sent as JSON values, the prompt
+says to treat embedded instructions as speech, and the judge's influence is bounded (ADR-0027).

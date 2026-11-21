@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -394,10 +394,52 @@ class SqlPipelineStore:
         stmt = stmt.order_by(m.Candidate.score.desc()).limit(limit)
         return [
             StoredCandidate(
-                c.id, c.rank, c.start_s, c.end_s, c.score, dict(c.components), c.reason, c.status
+                c.id,
+                c.rank,
+                c.start_s,
+                c.end_s,
+                c.score,
+                dict(c.components),
+                c.reason,
+                c.status,
+                tuple(c.title_suggestions or ()),
+                c.hook_text,
+                dict(c.judge) if c.judge else None,
             )
             for c in self.session.scalars(stmt)
         ]
+
+    def apply_judgement(
+        self,
+        candidate_id: UUID,
+        *,
+        score: float,
+        components: Mapping[str, Any],
+        judge: Mapping[str, Any],
+        titles: Sequence[str],
+        hook: str,
+        reason: str,
+    ) -> None:
+        c = self.session.get(m.Candidate, candidate_id)
+        if c is None or c.workspace_id != self.workspace_id:
+            return
+        c.score, c.components, c.judge = score, dict(components), dict(judge)
+        c.title_suggestions, c.hook_text, c.reason = list(titles), hook, reason
+        self.session.flush()
+
+    def rerank(self, video_id: UUID, profile_id: UUID) -> None:
+        rows = self.session.scalars(
+            select(m.Candidate)
+            .where(
+                m.Candidate.workspace_id == self.workspace_id,
+                m.Candidate.video_id == video_id,
+                m.Candidate.scoring_profile_id == profile_id,
+            )
+            .order_by(m.Candidate.score.desc(), m.Candidate.start_s)
+        ).all()
+        for i, c in enumerate(rows, start=1):
+            c.rank = i
+        self.session.flush()
 
 
 def stage_overview(

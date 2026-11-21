@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import Any
 from uuid import UUID
 
+import structlog
 from sqlalchemy.orm import Session
 
 from clipforge.adapters.audio.pyav_rms import PyAvRmsAnalyzer
@@ -18,6 +19,8 @@ from clipforge.adapters.chat.twitch_gql import TwitchGqlChatReplay
 from clipforge.adapters.chat.youtube_live_chat import YouTubeLiveChatReplay
 from clipforge.adapters.eventbus.in_process import InProcessEventBus
 from clipforge.adapters.fetchers.ytdlp import YtDlpFetcher
+from clipforge.adapters.judges.anthropic_judge import AnthropicJudge
+from clipforge.adapters.judges.null_judge import NullJudge
 from clipforge.adapters.misc import AllowAllQuota, SystemClock
 from clipforge.adapters.queue.dramatiq_queue import DISPATCH_ACTOR, DramatiqJobQueue, make_broker
 from clipforge.adapters.resolvers.ytdlp import KickResolver, TwitchResolver, YouTubeResolver
@@ -27,10 +30,14 @@ from clipforge.infra.config import Settings, get_settings
 from clipforge.infra.db.pipeline_store import SqlPipelineStore
 from clipforge.ports.analysis import AudioAnalyzer, ChatProvider
 from clipforge.ports.infra import BlobStore, Clock, EventBus, JobQueue, QuotaService
+from clipforge.ports.judge import LLMJudge
 from clipforge.ports.pipeline import MediaFetcher, SourceResolver, Transcriber
 from clipforge.services.analyze import AnalyzePipeline
 from clipforge.services.ingest import IngestPipeline
+from clipforge.services.judging import JudgeConfig
 from clipforge.signals import default_signals
+
+log = structlog.get_logger(__name__)
 
 # Job kinds → base queue. Transcription has its own queue family so GPU workers can own it.
 QUEUE_FOR_KIND: dict[str, str] = {"pipeline.transcribe": "transcribe"}
@@ -48,6 +55,7 @@ class Container:
     transcriber: Transcriber
     audio: AudioAnalyzer = field(default_factory=PyAvRmsAnalyzer)
     chat_overrides: dict[Platform, ChatProvider] | None = None  # tests inject fakes here
+    judge_override: LLMJudge | None = None  # tests inject fakes here
     _queue: JobQueue | None = field(default=None, repr=False)
 
     @property
@@ -84,6 +92,8 @@ class Container:
             audio=self.audio,
             blobs=self.blobs,
             events=self.events,
+            judge=self.judge_override or build_judge(self.settings),
+            judge_config=build_judge_config(self.settings),
         )
 
 
@@ -95,6 +105,39 @@ def build_chat_providers(settings: Settings, salt: str) -> dict[Platform, ChatPr
     if settings.enable_youtube_chat_replay:
         providers[Platform.YOUTUBE] = YouTubeLiveChatReplay(salt)
     return providers
+
+
+_JUDGE_CACHE: dict[tuple[str, str], LLMJudge] = {}
+
+
+def build_judge(settings: Settings) -> LLMJudge:
+    """AnthropicJudge only when explicitly enabled AND a key is configured (paid service)."""
+    if not settings.enable_llm_judge:
+        return NullJudge("ENABLE_LLM_JUDGE is off")
+    key = settings.anthropic_api_key.get_secret_value() if settings.anthropic_api_key else ""
+    if not key:
+        log.warning("llm_judge_enabled_without_key")
+        return NullJudge("ENABLE_LLM_JUDGE is on but CLIPFORGE_ANTHROPIC_API_KEY is empty")
+    cache_key = (settings.llm_model, key[-6:])
+    if cache_key not in _JUDGE_CACHE:  # reuse one HTTP client per process
+        _JUDGE_CACHE[cache_key] = AnthropicJudge(
+            model=settings.llm_model,
+            api_key=key,
+            timeout_s=settings.llm_timeout_s,
+            max_retries=settings.llm_max_retries,
+        )
+    return _JUDGE_CACHE[cache_key]
+
+
+def build_judge_config(settings: Settings) -> JudgeConfig:
+    return JudgeConfig(
+        batch_size=settings.judge_batch_size,
+        max_windows_per_video=settings.judge_max_windows_per_video,
+        price_in_per_mtok=settings.llm_price_in_per_mtok,
+        price_out_per_mtok=settings.llm_price_out_per_mtok,
+        price_cache_read_per_mtok=settings.llm_price_cache_read_per_mtok,
+        price_cache_write_per_mtok=settings.llm_price_cache_write_per_mtok,
+    )
 
 
 def build_resolvers(settings: Settings) -> list[SourceResolver]:

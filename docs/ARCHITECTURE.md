@@ -86,6 +86,21 @@ Design notes are in ADR-0023. Replay harness: `clipforge eval --labels tests/fix
 [--profile p] [--weight name=v] [--param name=v] [--k 5 --k 10]` reports precision@K and
 recall@K without writing candidates.
 
+## LLM judge (M3)
+
+```
+candidates (pending, by signal score)
+  -> top judge_top_n_per_hour x hours (cap 150)
+  -> per window: transcript excerpt + signal hints -> cache lookup (BlobStore judge-cache/)
+  -> uncached, batched by 8 -> LLMJudge (AnthropicJudge | NullJudge | FakeJudge)
+  -> final score = blend(signal, judge.overall, w); titles[3], hook, reason, verdict JSON
+  -> rerank; usage_events: llm_tokens_in / llm_tokens_out / llm_cost_usd_est
+```
+
+Runs as stage `judge` after `candidates` in `pipeline.analyze` (worker) and `clipforge analyze`
+(`--no-judge` to skip). Off unless `CLIPFORGE_ENABLE_LLM_JUDGE=true` and
+`CLIPFORGE_ANTHROPIC_API_KEY` are both set. Prompts: `docs/PROMPTS.md`. Design: ADR-0027..0029.
+
 ## HTTP surface
 
 | Path | Auth | Purpose |
@@ -98,7 +113,7 @@ recall@K without writing candidates.
 | `GET /api/v1/videos`, `GET /api/v1/videos/{id}` | bearer | list (limit/offset); detail with per-stage status |
 | `GET/POST /api/v1/sources`, `PATCH /api/v1/sources/{id}` | bearer | allowlist management |
 | `POST /api/v1/sources/{id}/retire` | bearer | takedown: block the source and hide its clips |
-| `GET /api/v1/videos/{id}/candidates` | bearer | ranked candidates with per-signal components and reason |
+| `GET /api/v1/videos/{id}/candidates` | bearer | ranked candidates: per-signal components, reason, judge verdict, `title_suggestions`, `hook_text` |
 | `GET /api/v1/openapi.json`, `/api/v1/docs` | none | OpenAPI |
 
 ## Running locally

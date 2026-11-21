@@ -12,7 +12,7 @@ import json
 import math
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -35,9 +35,20 @@ from clipforge.ports.analysis import (
     SignalSeries,
 )
 from clipforge.ports.infra import BlobStore, EventBus
+from clipforge.ports.judge import JudgeUnavailable, LLMJudge
 from clipforge.ports.pipeline import AssetRecord, PipelineError, ResolvedVideo, VideoRecord, Word
 from clipforge.scoring.generate import generate_candidates, summarize
 from clipforge.services._common import require_not_retired, require_video, sha256_text, track_stage
+from clipforge.services.judging import (
+    JudgeConfig,
+    JudgeOutcome,
+    JudgeTarget,
+    Judging,
+    blend,
+    categories_line,
+    judge_weight,
+    verdict_json,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -53,6 +64,8 @@ class AnalyzeResult:
     signals: dict[str, str]  # name -> "computed" | "cached" | "unavailable" | "failed: ..."
     chat_status: str
     combined: dict[str, float] = field(default_factory=dict)
+    judge_status: str = "disabled"
+    judge_cost_usd: float = 0.0
 
 
 def _hash_params(params: Mapping[str, Any]) -> str:
@@ -68,7 +81,11 @@ class AnalyzePipeline:
         audio: AudioAnalyzer,
         blobs: BlobStore,
         events: EventBus,
+        judge: LLMJudge | None = None,
+        judge_config: JudgeConfig | None = None,
     ) -> None:
+        self.judge = judge
+        self.judge_config = judge_config or JudgeConfig()
         self.store = store
         self.signals = signals
         self.chat_providers = chat_providers
@@ -202,9 +219,15 @@ class AnalyzePipeline:
         persist: bool = True,
         weight_overrides: Mapping[str, float] | None = None,
         param_overrides: Mapping[str, Any] | None = None,
+        with_judge: bool | None = None,
     ) -> AnalyzeResult:
-        """Compute signals (cached) and candidates. ``persist=False`` is the replay-harness
-        mode: same computation, nothing written to candidates (for A/B-ing profiles)."""
+        """Compute signals (cached), candidates, and (if enabled) LLM-judge them.
+
+        ``persist=False`` is the replay-harness mode: same computation, nothing written to
+        candidates. The judge runs there only with ``with_judge=True``, because it costs money.
+        """
+        if with_judge is None:
+            with_judge = persist
         video = require_video(self.store, video_id)
         require_not_retired(self.store, video, Stage.SIGNALS)
         t = self.store.get_transcript(video.id)
@@ -252,6 +275,135 @@ class AnalyzePipeline:
                 self.store.replace_candidates(video.id, profile.id, ranked)
         else:
             ranked, combined, used = candidates()
+
+        judge_status, cost = "disabled", 0.0
+        if with_judge and self.judge is not None and self.judge.enabled and ranked:
+            w = judge_weight(profile.weights, list(used))
+            if persist:
+                outcome = self._judge_stored(video, profile, words, duration, w)
+                stored = self.store.list_candidates(video.id, profile.id, limit=1000)
+                scores = {(c.start_s, c.end_s): c.score for c in stored}
+                ranked = sorted(
+                    (replace(c, score=scores.get((c.start_s, c.end_s), c.score)) for c in ranked),
+                    key=lambda c: -c.score,
+                )
+            else:
+                outcome, ranked = self._judge_in_memory(ranked, words, duration, profile, w)
+            judge_status, cost = outcome.status, self.judge_config.cost_usd(outcome.usage)
+        elif with_judge and self.judge is not None:
+            judge_status = "disabled (NullJudge)"
         return AnalyzeResult(
-            video.id, profile, ranked, used, status, chat_status, summarize(combined)
+            video.id,
+            profile,
+            ranked,
+            used,
+            status,
+            chat_status,
+            summarize(combined),
+            judge_status,
+            round(cost, 6),
         )
+
+    # ------------------------------------------------------------ judge (M3)
+    def _judging(self, judge: LLMJudge) -> Judging:
+        return Judging(judge, self.blobs, self.store.workspace_id, self.judge_config)
+
+    def _record_usage(self, judge: LLMJudge, video_id: UUID, outcome: JudgeOutcome) -> None:
+        u = outcome.usage
+        if not (u.input_tokens or u.output_tokens):
+            return
+        meta = {"model": judge.model, "prompt_id": judge.prompt_id}
+        self.store.record_usage(
+            "llm_tokens_in",
+            u.input_tokens,
+            "tokens",
+            video_id,
+            cache_read=u.cache_read_tokens,
+            cache_write=u.cache_write_tokens,
+            **meta,
+        )
+        self.store.record_usage("llm_tokens_out", u.output_tokens, "tokens", video_id, **meta)
+        self.store.record_usage(
+            "llm_cost_usd_est", round(self.judge_config.cost_usd(u), 6), "usd", video_id, **meta
+        )
+
+    def _judge_stored(
+        self,
+        video: VideoRecord,
+        profile: ScoringProfileRecord,
+        words: Sequence[Word],
+        duration: float,
+        w: float,
+    ) -> JudgeOutcome:
+        judge = self.judge
+        assert judge is not None
+        judging = self._judging(judge)
+        pending = [
+            c
+            for c in self.store.list_candidates(video.id, profile.id, limit=1000)
+            if c.status == "pending"
+        ]
+        top = pending[: judging.budget(duration, profile.params)]
+        targets = [
+            JudgeTarget(c.id, c.start_s, c.end_s, c.score, c.components, c.reason) for c in top
+        ]
+        outcome = JudgeOutcome()
+        stage_hash = sha256_text(judge.prompt_id, judge.model, *(str(t.key) for t in targets))
+        try:
+            with track_stage(self.store, self.events, video.id, Stage.JUDGE, stage_hash):
+                outcome = judging.run(targets, words)
+                self._record_usage(judge, video.id, outcome)
+                for t in targets:
+                    v = outcome.verdicts.get(t.key)
+                    if v is None:
+                        continue
+                    comps = {
+                        **t.components,
+                        "signal_score": t.signal_score,
+                        "llm_moment_score": round(v.overall, 4),
+                    }
+                    cats = categories_line(v)
+                    reason = v.reason + (f" ({cats})" if cats else "") + f" · signals: {t.reason}"
+                    self.store.apply_judgement(
+                        t.key,
+                        score=blend(t.signal_score, v.overall, w),
+                        components=comps,
+                        judge={
+                            **verdict_json(v, judge.model, judge.prompt_id),
+                            "weight": round(w, 4),
+                        },
+                        titles=v.titles,
+                        hook=v.hook,
+                        reason=reason,
+                    )
+                self.store.rerank(video.id, profile.id)
+                if targets and not outcome.verdicts:
+                    raise JudgeUnavailable(outcome.status)
+        except JudgeUnavailable:
+            pass  # recorded as a failed judge stage; candidates keep their signal scores
+        return outcome
+
+    def _judge_in_memory(
+        self,
+        ranked: list[CandidateWindow],
+        words: Sequence[Word],
+        duration: float,
+        profile: ScoringProfileRecord,
+        w: float,
+    ) -> tuple[JudgeOutcome, list[CandidateWindow]]:
+        judge = self.judge
+        assert judge is not None
+        judging = self._judging(judge)
+        n = judging.budget(duration, profile.params)
+        targets = [
+            JudgeTarget(i, c.start_s, c.end_s, c.score, c.components, c.reason)
+            for i, c in enumerate(ranked[:n])
+        ]
+        outcome = judging.run(targets, words)
+        rescored = [
+            replace(c, score=blend(c.score, outcome.verdicts[i].overall, w))
+            if i in outcome.verdicts
+            else c
+            for i, c in enumerate(ranked)
+        ]
+        return outcome, sorted(rescored, key=lambda c: -c.score)

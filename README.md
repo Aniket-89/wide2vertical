@@ -12,7 +12,8 @@ Personal tool first, with SaaS-ready seams. The full spec is in `CLAUDE CODE PRO
 | M0 Skeleton | ✅ |
 | M1 Ingest + transcript | ✅ |
 | M2 Signals + candidates | ✅ |
-| M3 LLM judge | next |
+| M3 LLM judge | ✅ (off until you add an API key) |
+| M4 Render | next |
 
 ## Quick start
 

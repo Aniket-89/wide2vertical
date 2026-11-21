@@ -135,7 +135,9 @@ def _print_candidates(res: AnalyzeResult, top: int) -> None:
     typer.echo(f"profile {res.profile.name} v{res.profile.version}  chat: {res.chat_status}")
     typer.echo("signals: " + ", ".join(f"{k}={v}" for k, v in res.signals.items()))
     typer.echo("weights used: " + ", ".join(f"{k}={v}" for k, v in res.weights_used.items()))
-    typer.echo(f"combined: {res.combined}   candidates: {len(res.candidates)}\n")
+    typer.echo(f"combined: {res.combined}   candidates: {len(res.candidates)}")
+    cost = f"  est. cost ${res.judge_cost_usd:.4f}" if res.judge_cost_usd else ""
+    typer.echo(f"judge: {res.judge_status}{cost}\n")
     names = list(res.weights_used)
     header = f"{'#':>2}  {'start':>10} {'end':>10} {'len':>4}  {'score':>5}  " + "  ".join(
         f"{n[:8]:>8}" for n in names
@@ -167,14 +169,17 @@ def _run_analysis(
     persist: bool = True,
     weights: dict[str, float] | None = None,
     params: dict[str, float] | None = None,
+    with_judge: bool | None = None,
 ) -> AnalyzeResult:
     with session_scope(commit_on_error=True) as session:
-        res = (
-            get_container()
-            .analyze_pipeline(session, _ws(), _actor())
-            .analyze(
-                video_id, profile, persist=persist, weight_overrides=weights, param_overrides=params
-            )
+        pipeline = get_container().analyze_pipeline(session, _ws(), _actor())
+        res = pipeline.analyze(
+            video_id,
+            profile,
+            persist=persist,
+            weight_overrides=weights,
+            param_overrides=params,
+            with_judge=with_judge,
         )
     _print_candidates(res, top)
     return res
@@ -188,8 +193,11 @@ def analyze(
     weight: Annotated[list[str] | None, typer.Option(help="Override: name=value")] = None,
     param: Annotated[list[str] | None, typer.Option(help="Override: name=value")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Don't save candidates")] = False,
+    no_judge: Annotated[
+        bool, typer.Option("--no-judge", help="Skip the LLM judge even if enabled")
+    ] = False,
 ) -> None:
-    """Compute signals and ranked candidate windows (signals are cached)."""
+    """Compute signals, ranked candidate windows, and (if enabled) LLM-judge the top ones."""
     try:
         _run_analysis(
             video_id,
@@ -198,6 +206,7 @@ def analyze(
             persist=not dry_run,
             weights=_parse_kv(weight),
             params=_parse_kv(param),
+            with_judge=False if no_judge else None,
         )
     except PipelineError as exc:
         typer.secho(f"failed: {exc}", fg=typer.colors.RED, err=True)
@@ -232,6 +241,9 @@ def eval_cmd(
     k: Annotated[list[int] | None, typer.Option(help="K values (repeatable)")] = None,
     weight: Annotated[list[str] | None, typer.Option(help="Override: name=value")] = None,
     param: Annotated[list[str] | None, typer.Option(help="Override: name=value")] = None,
+    with_judge: Annotated[
+        bool, typer.Option("--with-judge", help="Include the LLM judge (costs money)")
+    ] = False,
 ) -> None:
     """Replay harness: precision@K / recall@K of the current scoring vs. labels.json.
     Nothing is written to candidates, so profiles and overrides can be A/B-compared."""
@@ -258,6 +270,7 @@ def eval_cmd(
                     persist=False,
                     weight_overrides=_parse_kv(weight),
                     param_overrides=_parse_kv(param),
+                    with_judge=with_judge,
                 )
             )
             ranked = [(c.start_s, c.end_s) for c in res.candidates]

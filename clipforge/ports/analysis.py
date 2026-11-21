@@ -114,6 +114,9 @@ class StoredCandidate:
     components: Mapping[str, Any]
     reason: str
     status: str
+    title_suggestions: tuple[str, ...] = ()
+    hook_text: str = ""
+    judge: Mapping[str, Any] | None = None
 
 
 class AnalysisStore(Protocol):
@@ -142,6 +145,22 @@ class AnalysisStore(Protocol):
     def list_candidates(
         self, video_id: UUID, profile_id: UUID | None = None, limit: int = 100
     ) -> Sequence[StoredCandidate]: ...
+
+    def apply_judgement(
+        self,
+        candidate_id: UUID,
+        *,
+        score: float,
+        components: Mapping[str, Any],
+        judge: Mapping[str, Any],
+        titles: Sequence[str],
+        hook: str,
+        reason: str,
+    ) -> None: ...
+
+    def rerank(self, video_id: UUID, profile_id: UUID) -> None:
+        """Renumber this profile's candidates 1..n by score (after judging)."""
+        ...
 
 
 class AnalysisPipelineStore(PipelineStore, AnalysisStore, Protocol):

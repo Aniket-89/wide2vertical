@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,13 @@ from clipforge.ports.analysis import (
     ScoringProfileRecord,
     SignalSeries,
     StoredCandidate,
+)
+from clipforge.ports.judge import (
+    JudgeInput,
+    JudgeResult,
+    JudgeUnavailable,
+    JudgeUsage,
+    JudgeVerdict,
 )
 from clipforge.ports.pipeline import (
     AssetRecord,
@@ -371,3 +378,91 @@ class InMemoryAnalysisStore(InMemoryPipelineStore):
             if profile_id is None or self.candidate_profile.get(c.id) == profile_id
         ]
         return sorted(rows, key=lambda c: -c.score)[:limit]
+
+    def apply_judgement(
+        self,
+        candidate_id: UUID,
+        *,
+        score: float,
+        components: Mapping[str, Any],
+        judge: Mapping[str, Any],
+        titles: Sequence[str],
+        hook: str,
+        reason: str,
+    ) -> None:
+        for rows in self.candidates.values():
+            for i, c in enumerate(rows):
+                if c.id == candidate_id:
+                    rows[i] = replace(
+                        c,
+                        score=score,
+                        components=dict(components),
+                        judge=dict(judge),
+                        title_suggestions=tuple(titles),
+                        hook_text=hook,
+                        reason=reason,
+                    )
+                    return
+
+    def rerank(self, video_id: UUID, profile_id: UUID) -> None:
+        rows = self.candidates.get(video_id, [])
+        mine = sorted(
+            (c for c in rows if self.candidate_profile.get(c.id) == profile_id),
+            key=lambda c: (-c.score, c.start_s),
+        )
+        new_rank = {c.id: i for i, c in enumerate(mine, start=1)}
+        self.candidates[video_id] = [replace(c, rank=new_rank.get(c.id, c.rank)) for c in rows]
+
+
+class FakeJudge:
+    """Scores windows by a function of their transcript; can fail per call or always."""
+
+    def __init__(
+        self,
+        score_fn: Callable[[JudgeInput], float] | None = None,
+        *,
+        fail_calls: set[int] | None = None,
+        always_fail: bool = False,
+    ) -> None:
+        self.score_fn = score_fn or (lambda it: 0.5)
+        self.fail_calls = fail_calls or set()
+        self.always_fail = always_fail
+        self.calls = 0
+        self.batches: list[list[int]] = []
+
+    @property
+    def enabled(self) -> bool:
+        return True
+
+    @property
+    def model(self) -> str:
+        return "fake-judge"
+
+    @property
+    def prompt_id(self) -> str:
+        return "judge.moment.v1"
+
+    def judge(self, items: Sequence[JudgeInput]) -> JudgeResult:
+        self.calls += 1
+        self.batches.append([it.index for it in items])
+        if self.always_fail or self.calls in self.fail_calls:
+            raise JudgeUnavailable("fake: LLM timeout")
+        verdicts = [
+            JudgeVerdict(
+                index=it.index,
+                scores={
+                    "funny": 0.1,
+                    "shocking": 0.1,
+                    "clutch": 0.1,
+                    "emotional": 0.1,
+                    "quotable": 0.1,
+                },
+                setup_payoff=True,
+                overall=self.score_fn(it),
+                titles=(f"title {it.index} a", f"title {it.index} b", f"title {it.index} c"),
+                hook=f"hook {it.index}",
+                reason=f"fake reason {it.index}",
+            )
+            for it in items
+        ]
+        return JudgeResult(verdicts, JudgeUsage(input_tokens=100 * len(items), output_tokens=40))
