@@ -310,3 +310,10 @@ training set. Validation: clip length 5–180 s, inside the video; layouts and c
 checked; approval re-checks takedowns.
 `export_description` always appends the source's required credit. A clip with no intro and
 unedited captions carries the YouTube reused-content warning (spec §2).
+
+## ADR-0034 addendum — Takedown gate parity (2026-11-21)
+Security review: `ensure_clip` and review *edits* weren't gated on takedowns (only approval and
+rendering were). Creating or editing a clip after a retire would resurface a clip the takedown
+hid. Now `ensure_clip` and every clip-creating or clip-editing review action call
+`require_not_retired`. After a takedown only `rejected`/`pending` status changes are allowed,
+so the review queue can still be tidied.

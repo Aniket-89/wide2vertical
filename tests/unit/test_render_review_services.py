@@ -229,3 +229,16 @@ def test_reused_content_warning_and_description(rig: Rig) -> None:
     assert with_intro.clip is not None and reused_content_warnings(with_intro.clip) == []
     desc = export_description("Insane clutch", "wait for it", "Clip: twitch.tv/streamer")
     assert desc.endswith("Clip: twitch.tv/streamer") and desc.startswith("Insane clutch")
+
+
+def test_takedown_blocks_clip_creation_and_edits_but_allows_reject(rig: Rig) -> None:
+    rig.store.retire(rig.src.id)
+    with pytest.raises(SourceNotAllowed):
+        rig.pipe.ensure_clip(rig.cands[0].id)
+    with pytest.raises(SourceNotAllowed):
+        rig.review.update(rig.cands[0].id, caption_text="edit after takedown")
+    with pytest.raises(SourceNotAllowed):
+        rig.review.update(rig.cands[0].id, start_s=101.0, end_s=127.0)
+    assert rig.store.clips == {}
+    out = rig.review.update(rig.cands[0].id, status="rejected")  # tidying up still works
+    assert out.candidate.status == "rejected" and out.clip is None

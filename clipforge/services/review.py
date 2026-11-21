@@ -99,9 +99,6 @@ class ReviewService:
             raise ReviewInvalid("video not found")
         if status is not None and status not in STATUSES:
             raise ReviewInvalid(f"status must be one of {STATUSES}")
-        if status == "approved":
-            require_not_retired(self.store, video, Stage.RENDER)
-
         edits_clip = (
             any(
                 v is not None
@@ -117,6 +114,11 @@ class ReviewService:
             )
             or clear_crop_override
         )
+        # Takedown: after a source is retired only reject/reset are allowed. No approving,
+        # editing, or creating clips, which would resurface clips the takedown hid.
+        if status == "approved" or edits_clip:
+            require_not_retired(self.store, video, Stage.RENDER)
+
         clip = self.store.get_clip_for_candidate(cand.id)
         if clip is None and (edits_clip or status == "approved"):
             src = self.store.source_for_video(video)

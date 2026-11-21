@@ -98,6 +98,7 @@ class RenderPipeline:
         if existing is not None:
             return existing
         video = self._video(cand.video_id)
+        require_not_retired(self.store, video, Stage.RENDER)  # don't recreate hidden clips
         src = self.store.source_for_video(video)
         credit = src.required_credit_text if src else ""
         return self.store.create_clip(cand, credit)
