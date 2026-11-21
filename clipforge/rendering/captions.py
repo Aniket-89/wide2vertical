@@ -183,3 +183,48 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if intro.strip():
         ev(0.0, min(3.5, duration_s), "Intro", sanitize(intro), layer=2)
     return header + "\n".join(events) + ("\n" if events else "")
+
+
+POSITIONS = ("lower_third", "middle", "top")
+_FONT_RE = re.compile(r"[A-Za-z0-9 \-]{1,64}")
+_INT_RANGES = {
+    "size": (20, 200),
+    "outline_px": (0, 20),
+    "safe_margin_bottom_px": (0, 900),
+    "words_per_line": (1, 8),
+    "max_line_chars": (6, 40),
+}
+
+
+def validate_style_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
+    """Check a user-supplied caption style. Returns the cleaned spec; raises ValueError with
+    a user-facing message. Unknown keys are rejected so typos don't silently do nothing."""
+    fields = CaptionStyle.__dataclass_fields__
+    unknown = sorted(set(spec) - set(fields))
+    if unknown:
+        raise ValueError(f"unknown caption style keys: {', '.join(unknown)}")
+    out: dict[str, Any] = {}
+    for key, value in spec.items():
+        if key == "font":
+            if not isinstance(value, str) or not _FONT_RE.fullmatch(value):
+                raise ValueError("font must be 1-64 letters, digits, spaces or hyphens")
+            out[key] = value
+        elif key in ("primary", "highlight", "outline"):
+            if not isinstance(value, str):
+                raise ValueError(f"{key} must be a #RRGGBB colour")
+            ass_color(value)  # raises ValueError on a bad colour
+            out[key] = "#" + value.lstrip("#").upper()
+        elif key == "position":
+            if value not in POSITIONS:
+                raise ValueError(f"position must be one of {', '.join(POSITIONS)}")
+            out[key] = value
+        elif key == "uppercase":
+            if not isinstance(value, bool):
+                raise ValueError("uppercase must be true or false")
+            out[key] = value
+        else:
+            lo, hi = _INT_RANGES[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+                raise ValueError(f"{key} must be a whole number from {lo} to {hi}")
+            out[key] = value
+    return out

@@ -10,3 +10,5 @@ htmlcov/
 data/
 node_modules/
 dist/
+.playwright-mcp/
+*.tsbuildinfo

@@ -8,10 +8,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from apps.api.deps import ContainerDep, PrincipalDep, SessionDep
 from clipforge.infra.db import models as m
-from clipforge.infra.db.pipeline_store import SqlPipelineStore, stage_overview
+from clipforge.infra.db.pipeline_store import stage_overview
+from clipforge.infra.db.render_store import SqlRenderStore
 from clipforge.infra.db.repositories import ScoringProfileRepo, VideoRepo
 from clipforge.ports.infra import Priority
 from clipforge.ports.pipeline import PipelineError, UnsupportedUrl
@@ -36,6 +38,7 @@ class VideoOut(BaseModel):
     status: str
     override_used: bool
     source_id: UUID | None
+    scoring_profile_id: UUID | None
     created_at: datetime
 
 
@@ -86,11 +89,10 @@ def create_video(
     if body.scoring_profile_id:
         video.scoring_profile_id = body.scoring_profile_id
     session.commit()  # the worker must see the row before it picks up the job
-    container.queue.enqueue(
-        "pipeline.fetch",
-        {"workspace_id": str(principal.workspace_id), "video_id": str(video.id)},
-        priority=Priority.NORMAL,
-    )
+    payload = {"workspace_id": str(principal.workspace_id), "video_id": str(video.id)}
+    if video.scoring_profile_id:
+        payload["scoring_profile_id"] = str(video.scoring_profile_id)
+    container.queue.enqueue("pipeline.fetch", payload, priority=Priority.NORMAL)
     if not res.created:
         response.status_code = status.HTTP_200_OK
     return _out(video)
@@ -116,6 +118,42 @@ def get_video(video_id: UUID, principal: PrincipalDep, session: SessionDep) -> d
     return {**_out(v), "stages": stage_overview(session, principal.workspace_id, video_id)}
 
 
+class AnalyzeIn(BaseModel):
+    scoring_profile_id: UUID | None = None
+
+
+@router.post("/{video_id}/analyze", response_model=VideoOut, status_code=202)
+def reanalyze_video(
+    video_id: UUID,
+    body: AnalyzeIn,
+    principal: PrincipalDep,
+    session: SessionDep,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    """Re-run signals + scoring (cheap: signals are cached) with another scoring profile.
+    Reviewed candidates keep their decisions; pending ones are replaced."""
+    ws = principal.workspace_id
+    v = VideoRepo(session, ws).get(video_id)
+    if v is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "video not found")
+    if body.scoring_profile_id is not None:
+        if ScoringProfileRepo(session, ws).get(body.scoring_profile_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "scoring profile not found")
+        v.scoring_profile_id = body.scoring_profile_id
+    session.commit()
+    payload = {"workspace_id": str(ws), "video_id": str(v.id)}
+    if v.scoring_profile_id:
+        payload["scoring_profile_id"] = str(v.scoring_profile_id)
+    container.queue.enqueue("pipeline.analyze", payload, priority=Priority.HIGH)
+    return _out(v)
+
+
+class ClipSummary(BaseModel):
+    clip_id: UUID
+    preview: str | None  # newest render status: running | succeeded | failed | None
+    final: str | None
+
+
 class CandidateOut(BaseModel):
     id: UUID
     rank: int
@@ -128,6 +166,7 @@ class CandidateOut(BaseModel):
     title_suggestions: list[str]
     hook_text: str
     judge: dict[str, Any] | None
+    clip: ClipSummary | None
 
 
 @router.get("/{video_id}/candidates", response_model=list[CandidateOut])
@@ -139,9 +178,13 @@ def list_video_candidates(
 ) -> list[dict[str, Any]]:
     """Ranked candidates (best first) with per-signal components, the LLM judge's verdict
     (when enabled), title suggestions and hook text."""
-    if VideoRepo(session, principal.workspace_id).get(video_id) is None:
+    ws = principal.workspace_id
+    v = VideoRepo(session, ws).get(video_id)
+    if v is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "video not found")
-    rows = SqlPipelineStore(session, principal.workspace_id).list_candidates(video_id, limit=limit)
+    store = SqlRenderStore(session, ws)
+    rows = store.list_candidates(video_id, _shown_profile(session, v), limit=limit)
+    clips = store.clip_summaries([c.id for c in rows])
     return [
         {
             "id": c.id,
@@ -155,6 +198,20 @@ def list_video_candidates(
             "title_suggestions": list(c.title_suggestions),
             "hook_text": c.hook_text,
             "judge": c.judge,
+            "clip": clips.get(c.id),
         }
         for c in rows
     ]
+
+
+def _shown_profile(session: SessionDep, v: m.Video) -> UUID | None:
+    """Candidates from one analysis only: the video's pinned profile, else whichever
+    profile produced its newest candidates. Mixing profiles would mix score scales."""
+    if v.scoring_profile_id:
+        return v.scoring_profile_id
+    return session.scalar(
+        select(m.Candidate.scoring_profile_id)
+        .where(m.Candidate.workspace_id == v.workspace_id, m.Candidate.video_id == v.id)
+        .order_by(m.Candidate.id.desc())
+        .limit(1)
+    )

@@ -70,12 +70,12 @@ def _transcribe(payload: dict[str, Any]) -> None:
 @handler("pipeline.analyze")
 def _analyze(payload: dict[str, Any]) -> None:
     ws, video_id = _ids(payload)
+    # The profile chosen at submission (or re-analysis) travels with the payload by id, so a
+    # newer version of the same profile doesn't silently change an in-flight analysis.
+    raw = payload.get("scoring_profile_id")
+    profile: str | UUID | None = UUID(raw) if raw else payload.get("scoring_profile")
     with session_scope(commit_on_error=True) as session:
-        res = (
-            get_container()
-            .analyze_pipeline(session, ws)
-            .analyze(video_id, payload.get("scoring_profile"))
-        )
+        res = get_container().analyze_pipeline(session, ws).analyze(video_id, profile)
     log.info("analyzed", candidates=len(res.candidates), chat=res.chat_status, signals=res.signals)
     n = get_container().settings.preview_top_n
     if n > 0:  # auto-previews of the best candidates so review can start right away

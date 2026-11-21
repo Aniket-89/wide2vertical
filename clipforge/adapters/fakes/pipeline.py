@@ -346,10 +346,14 @@ class InMemoryAnalysisStore(InMemoryPipelineStore):
                 return f"{h}:{cfg}", t.words
         return None
 
-    def get_scoring_profile(self, name: str | None) -> ScoringProfileRecord:
-        matches = [p for p in self.profiles if name is None or p.name == name]
+    def get_scoring_profile(self, ref: str | UUID | None) -> ScoringProfileRecord:
+        matches = [
+            p
+            for p in self.profiles
+            if ref is None or (p.id == ref if isinstance(ref, UUID) else p.name == ref)
+        ]
         if not matches:
-            raise PipelineError(f"scoring profile {name or '(default)'} not found")
+            raise PipelineError(f"scoring profile {ref or '(default)'} not found")
         return max(matches, key=lambda p: p.version)
 
     def find_signal(self, video_id: UUID, name: str, input_hash: str) -> SignalSeries | None:

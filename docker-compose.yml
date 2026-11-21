@@ -63,7 +63,12 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
-  # web: added in M5
+  # Review UI (M5). Loopback by default. To review from your phone, either set
+  # CLIPFORGE_WEB_BIND=0.0.0.0 on a trusted LAN or use a private tunnel such as Tailscale.
+  web:
+    build: { context: ., dockerfile: docker/Dockerfile.web }
+    ports: ["${CLIPFORGE_WEB_BIND:-127.0.0.1}:8080:80"]
+    depends_on: [api]
 
 volumes:
   pgdata:

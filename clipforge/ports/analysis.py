@@ -128,8 +128,9 @@ class AnalysisStore(Protocol):
         """Latest transcript as (content_key, words), or None."""
         ...
 
-    def get_scoring_profile(self, name: str | None) -> ScoringProfileRecord:
-        """Named profile (latest version), or the workspace default when name is None."""
+    def get_scoring_profile(self, ref: str | UUID | None) -> ScoringProfileRecord:
+        """A profile by id (exact version), by name (latest version), or the workspace
+        default when ref is None."""
         ...
 
     def find_signal(self, video_id: UUID, name: str, input_hash: str) -> SignalSeries | None: ...

@@ -199,7 +199,17 @@ class RenderPipeline:
             and existing.blob_key
             and self.blobs.exists(BlobKey(existing.blob_key))
         ):
-            return RenderOutcome(existing, True, clip.layout, "cached")
+            # mark it the clip's current render again (downloads serve the newest)
+            rec = self.store.save_render(
+                clip.id,
+                kind,
+                h,
+                status="succeeded",
+                blob_key=existing.blob_key,
+                duration_s=existing.duration_s,
+                render_seconds=existing.render_seconds,
+            )
+            return RenderOutcome(rec, True, clip.layout, "cached")
 
         self.store.save_render(clip.id, kind, h, status="running")
         try:

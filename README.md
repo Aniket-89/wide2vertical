@@ -14,13 +14,15 @@ Personal tool first, with SaaS-ready seams. The full spec is in `CLAUDE CODE PRO
 | M2 Signals + candidates | ✅ |
 | M3 LLM judge | ✅ (off until you add an API key) |
 | M4 Render | ✅ |
-| M5 Review UI | next |
+| M5 Review UI | ✅ (http://127.0.0.1:8080) |
+| M6 Publishing | next |
 
 ## Quick start
 
 ```bash
 cp .env.example .env            # set CLIPFORGE_API_TOKEN
-docker compose up --build       # postgres, redis, migrate+seed, api, worker
+docker compose up --build       # postgres, redis, migrate+seed, api, worker, web
+# open http://127.0.0.1:8080 and paste the token. To review on a phone, see docs/ARCHITECTURE.md
 curl http://127.0.0.1:8000/health
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/v1/me
 ```

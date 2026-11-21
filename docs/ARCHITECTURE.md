@@ -117,6 +117,24 @@ review: PATCH /candidates/{id} -> ReviewService -> feedback_events (+ final rend
 Worker: `pipeline.analyze` -> `render.preview_top` -> one `render.preview` per clip
 (queue `render`); approval -> `render.final`. Design: ADR-0031..0034.
 
+## Review UI (M5)
+
+`apps/web`: React 19 + Vite + TypeScript, no UI framework or router library (ADR-0035).
+Screens: videos (add URL, scoring profile, override), video (stage progress, re-score,
+moments by status), review (9:16 player, trim nudges, intro, captions, layout, style,
+approve/reject, post text, downloads), sources (allowlist, takedown), settings (token,
+scoring profiles, caption styles). The page polls while work is in flight: stages every 4 s,
+and a render it queued every 3 s.
+
+```
+browser --(#/hash routes)--> static build (nginx, docker/Dockerfile.web)
+        --/api/v1/*  bearer--> nginx proxy --> api:8000
+media:  fetch(download, bearer) -> Blob -> object URL -> <video>   (no token in URLs)
+```
+
+The `web` service binds to loopback on port 8080. To review on a phone, use a private tunnel
+such as Tailscale, or set `CLIPFORGE_WEB_BIND=0.0.0.0` on a trusted LAN.
+
 ## HTTP surface
 
 | Path | Auth | Purpose |
@@ -134,7 +152,11 @@ Worker: `pipeline.analyze` -> `render.preview_top` -> one `render.preview` per c
 | `GET /api/v1/clips/{id}` | bearer | clip + renders + export description (with credit) + warnings |
 | `POST /api/v1/clips/{id}/render` | bearer | `{kind: preview|final, force}`; final needs approval (409) |
 | `GET /api/v1/clips/{id}/download?kind=` | bearer | the rendered MP4 |
-| `GET /api/v1/videos/{id}/candidates` | bearer | ranked candidates: per-signal components, reason, judge verdict, `title_suggestions`, `hook_text` |
+| `GET /api/v1/videos/{id}/candidates` | bearer | ranked candidates from one analysis (the video's profile): per-signal components, reason, judge verdict, `title_suggestions`, `hook_text`, `clip` (id + newest render status per kind) |
+| `POST /api/v1/videos/{id}/analyze` | bearer | `{scoring_profile_id?}`: pin a profile and re-score (signals are cached) |
+| `GET/POST /api/v1/scoring-profiles` | bearer | list; create (an existing name gets the next version) |
+| `GET/POST /api/v1/caption-styles` | bearer | list; create (validated spec, versioned) |
+| `POST /api/v1/clips/{id}/publish` | bearer | `501` until M6 |
 | `GET /api/v1/openapi.json`, `/api/v1/docs` | none | OpenAPI |
 
 ## Running locally
@@ -156,8 +178,10 @@ uv run clipforge approve <candidate_id> [--start --end --caption --layout --intr
 uv run clipforge reject <candidate_id>
 uv run clipforge export <clip_id> --out clip.mp4   # prints the post description incl. credit
 uv run pytest                          # CLIPFORGE_NETWORK_TESTS=1 also runs real yt-dlp/whisper
-# or everything in containers:
+# or everything in containers (UI on http://127.0.0.1:8080):
 docker compose up --build
+# UI dev server with hot reload (proxies /api to 127.0.0.1:8000):
+cd apps/web && npm install && npm run dev
 ```
 
 Windows notes: use `127.0.0.1`, not `localhost` (ADR-0007). Host-side Redis is on port 6380 (ADR-0009).

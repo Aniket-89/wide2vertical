@@ -294,9 +294,12 @@ class SqlPipelineStore:
         ]
         return f"{t.content_hash}:{t.config_version}", words
 
-    def get_scoring_profile(self, name: str | None) -> ScoringProfileRecord:
+    def get_scoring_profile(self, ref: str | UUID | None) -> ScoringProfileRecord:
+        name = ref
         stmt = select(m.ScoringProfile).where(m.ScoringProfile.workspace_id == self.workspace_id)
-        if name is None:
+        if isinstance(ref, UUID):
+            stmt = stmt.where(m.ScoringProfile.id == ref)
+        elif name is None:
             stmt = stmt.order_by(
                 m.ScoringProfile.is_default.desc(), m.ScoringProfile.version.desc()
             )

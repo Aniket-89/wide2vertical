@@ -214,7 +214,7 @@ class AnalyzePipeline:
     def analyze(
         self,
         video_id: UUID,
-        profile_name: str | None = None,
+        profile_ref: str | UUID | None = None,
         *,
         persist: bool = True,
         weight_overrides: Mapping[str, float] | None = None,
@@ -234,7 +234,7 @@ class AnalyzePipeline:
         if t is None:
             raise PipelineError("no transcript yet; run the transcribe stage first")
         transcript_key, words = t
-        base = self.store.get_scoring_profile(profile_name)
+        base = self.store.get_scoring_profile(profile_ref)
         profile = ScoringProfileRecord(
             base.id,
             base.name,

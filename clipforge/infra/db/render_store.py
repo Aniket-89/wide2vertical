@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -81,6 +83,49 @@ class SqlRenderStore(SqlPipelineStore):
     def get_clip(self, clip_id: UUID) -> ClipRecord | None:
         c = self._clip(clip_id)
         return self._clip_record(c) if c else None
+
+    def clip_summaries(self, candidate_ids: Sequence[UUID]) -> dict[UUID, dict[str, Any]]:
+        """For a page of candidates: their clip id and the newest render status per kind
+        (any status, so the UI can show "rendering" and "failed"). Two queries, not N."""
+        if not candidate_ids:
+            return {}
+        clips = self.session.execute(
+            select(m.Clip.id, m.Clip.candidate_id).where(
+                m.Clip.workspace_id == self.workspace_id,
+                m.Clip.candidate_id.in_(list(candidate_ids)),
+                m.Clip.deleted_at.is_(None),
+            )
+        ).all()
+        out: dict[UUID, dict[str, Any]] = {
+            cand_id: {"clip_id": clip_id, "preview": None, "final": None}
+            for clip_id, cand_id in clips
+        }
+        by_clip = {clip_id: cand_id for clip_id, cand_id in clips}
+        if by_clip:
+            rows = self.session.execute(
+                select(m.ClipRender.clip_id, m.ClipRender.kind, m.ClipRender.status)
+                .where(
+                    m.ClipRender.workspace_id == self.workspace_id,
+                    m.ClipRender.clip_id.in_(list(by_clip)),
+                )
+                .order_by(m.ClipRender.updated_at.desc(), m.ClipRender.id.desc())
+            ).all()
+            for clip_id, kind, status in rows:
+                entry = out[by_clip[clip_id]]
+                if kind in ("preview", "final") and entry[kind] is None:
+                    entry[kind] = status
+        return out
+
+    def render_statuses(self, clip_id: UUID) -> dict[str, str | None]:
+        cand = self.session.scalar(
+            select(m.Clip.candidate_id).where(
+                m.Clip.workspace_id == self.workspace_id, m.Clip.id == clip_id
+            )
+        )
+        if cand is None:
+            return {"preview": None, "final": None}
+        s = self.clip_summaries([cand]).get(cand, {})
+        return {"preview": s.get("preview"), "final": s.get("final")}
 
     def get_clip_for_candidate(self, candidate_id: UUID) -> ClipRecord | None:
         c = self.session.scalars(
@@ -173,7 +218,8 @@ class SqlRenderStore(SqlPipelineStore):
                 m.ClipRender.kind == kind,
                 m.ClipRender.status == "succeeded",
             )
-            .order_by(m.ClipRender.id.desc())
+            # most recently produced *or reused*: trimming A->B->A must serve A again
+            .order_by(m.ClipRender.updated_at.desc(), m.ClipRender.id.desc())
         ).first()
         return self._render_record(r) if r else None
 
@@ -203,6 +249,7 @@ class SqlRenderStore(SqlPipelineStore):
             self.session.add(r)
         r.status, r.blob_key = status, blob_key
         r.duration_s, r.render_seconds = duration_s, render_seconds
+        r.updated_at = datetime.now(UTC)  # bump even when nothing else changed (cache reuse)
         self.session.flush()
         return self._render_record(r)
 

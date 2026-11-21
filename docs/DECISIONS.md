@@ -317,3 +317,45 @@ rendering were). Creating or editing a clip after a retire would resurface a cli
 hid. Now `ensure_clip` and every clip-creating or clip-editing review action call
 `require_not_retired`. After a takedown only `rejected`/`pending` status changes are allowed,
 so the review queue can still be tidied.
+
+## ADR-0035 — Review UI: React + Vite, no framework, static build behind nginx (2026-11-21)
+- React 19, Vite and TypeScript (strict), as the spec asks. No UI kit, state library or router:
+  five screens don't need them, and every dependency is MIT. Hash routes keep the build static.
+- Mobile first, because the owner reviews on a phone. The 9:16 player is height-capped
+  (62 dvh), the action bar is fixed with safe-area padding, and touch targets are ≥ 44 px.
+  Visual language: a light "edit bay" palette where colour carries meaning. Each signal owns
+  a hue, so the signal strip on every moment shows *why* it was picked.
+- Media: `<video src>` can't send the bearer header, and putting the token in a URL would
+  leak it into logs and history. The UI fetches renders as blobs and plays object URLs. That
+  fits previews and finals (a few MB to ~15 MB). Signed short-lived URLs are the SaaS-era
+  replacement and only touch the download route.
+- The token is stored in localStorage on the device. That's acceptable for a single-owner,
+  loopback-bound MVP. Real auth replaces `current_principal` and this screen together.
+- Serving: a multi-stage `Dockerfile.web` (node:24-alpine build → nginx:1.27-alpine) with
+  `/api` proxied to the API, so there's one origin and no CORS. It sets a strict CSP
+  (`media-src blob:`), nosniff and DENY framing. It binds to loopback by default. For phone
+  access use a private tunnel, or opt in to LAN with `CLIPFORGE_WEB_BIND`.
+- The lockfile must list every platform's optional packages: one generated on Windows failed
+  `npm ci` on Linux (missing `@emnapi/*`). Regenerate it from scratch when dependencies change.
+
+## ADR-0036 — Scoring profile travels with the video, by id (2026-11-21)
+Bug found while wiring the profile selector: `POST /videos` stored `scoring_profile_id`, but
+the worker analysed with the default profile, because the payload carried only an optional
+profile *name*. Now the id rides in the job payload (fetch → transcribe → analyze).
+`get_scoring_profile` accepts an id (exact version), a name (latest version) or None
+(default), so a new version of a profile doesn't change an in-flight analysis.
+`POST /videos/{id}/analyze` pins a profile and re-scores; signals are cached, so it's cheap.
+The candidate list shows one analysis only (the pinned profile, else the newest candidates'
+profile), because mixing profiles would mix score scales. Profiles and caption styles are
+append-only and versioned: POSTing an existing name creates version n+1, so old candidates
+and renders stay explainable. Validation is pure (`scoring/profile.py`,
+`rendering/captions.validate_style_spec`). The caption font is restricted to letters, digits,
+spaces and hyphens, even though render-time sanitising already strips ASS separators.
+
+## ADR-0037 — "Latest render" means most recently produced or reused (2026-11-21)
+Bug: `latest_render` picked the highest id. With content-hash reuse, trimming A → B → back
+to A reuses A's old row, so downloads served B's video. Now every save bumps `updated_at`,
+including a cache hit (the render service re-saves the reused row), and `latest_render` orders
+by `updated_at`. No schema change: the column already existed. A regression test covers the
+A→B→A case.
+

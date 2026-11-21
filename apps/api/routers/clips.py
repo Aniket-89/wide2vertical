@@ -57,6 +57,7 @@ class ClipOut(BaseModel):
     commentary_text: str
     credit_text: str
     renders: list[RenderOut]
+    render_status: dict[str, str | None]
     export_description: str
     warnings: list[str]
 
@@ -107,6 +108,7 @@ def _clip_out(store: SqlRenderStore, clip: ClipRecord) -> ClipOut:
         commentary_text=clip.commentary_text,
         credit_text=clip.credit_text,
         renders=renders,
+        render_status=store.render_statuses(clip.id),
         export_description=export_description(
             title, cand.hook_text if cand else "", clip.credit_text
         ),
@@ -202,6 +204,12 @@ def render_clip(
             raise HTTPException(status.HTTP_409_CONFLICT, "final renders need an approved clip")
     _enqueue_render(container, principal.workspace_id, clip.id, body.kind, body.force)
     return _clip_out(store, clip)
+
+
+@router.post("/clips/{clip_id}/publish", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+def publish_clip(clip_id: UUID, principal: PrincipalDep) -> dict[str, str]:
+    """Auto-publishing arrives in M6. For now: download the final render and post it."""
+    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "publishing arrives in milestone 6")
 
 
 @router.get("/clips/{clip_id}/download")
