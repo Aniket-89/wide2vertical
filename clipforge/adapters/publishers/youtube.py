@@ -138,7 +138,7 @@ class YouTubePublisher:
         session = start.headers["location"]
         video = self._send(session, req.path, size, auth)
         vid = str(video["id"])
-        return PublishResult(vid, f"https://youtu.be/{vid}")
+        return PublishResult(vid, f"https://youtu.be/{vid}")  # works for Shorts and videos
 
     def _send(self, session: str, path: Path, size: int, auth: dict[str, str]) -> dict[str, Any]:
         """Chunked PUTs; on a network error or 5xx ask YouTube how much it has and resume."""

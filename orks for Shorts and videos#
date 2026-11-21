@@ -1,1 +1,0 @@
-        return PublishResult(vid, f"https://youtu.be/{vid}")  
