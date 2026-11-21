@@ -54,6 +54,14 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
+  # Publishing scheduler (M6): queues due posts and pulls view stats. DB-driven, so a restart
+  # loses nothing.
+  scheduler:
+    <<: *python
+    command: ["clipforge", "scheduler"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
   # Transcription pool. CPU by default; enable GPU later (ADR-0005).
   worker-gpu:
     <<: *python

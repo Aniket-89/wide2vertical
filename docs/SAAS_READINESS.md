@@ -18,7 +18,7 @@ Status key: ✅ done · 🟡 seam exists, not built · ⬜ not started
 | GPU workers scale separately | 🟡 | `worker-gpu` profile on `transcribe*` queues |
 | Storage keys workspace-prefixed | ✅ | `BlobKey` enforces `ws/<uuid>/` |
 | S3 adapter | ⬜ | `BlobStore` port ready |
-| Encrypted per-workspace secrets | 🟡 | `publish_targets.secret_ref` column; `SecretBox` port planned for M6 |
+| Encrypted per-workspace secrets | ✅ | `SecretBox` port; AES-256-GCM with the workspace id as associated data (a ref can't be opened in another workspace). Key from `CLIPFORGE_SECRET_KEY`; a KMS adapter can replace it later |
 | Audit log | ✅ | Refusals, overrides, source add/update/retire |
 | Takedown flow | ✅ | `POST /sources/{id}/retire` / `clipforge sources retire`; override can't bypass it |
 | ToS/DMCA process documented | ⬜ | Before any public use |

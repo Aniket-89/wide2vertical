@@ -94,3 +94,14 @@ describe("api client", () => {
     expect(errorMessage(500, null)).toBe("Request failed (500)");
   });
 });
+
+describe("publishing helpers", () => {
+  it("converts a local schedule time to an absolute instant", async () => {
+    const { localToIso, isActive } = await import("./components/publish");
+    const iso = localToIso("2026-11-21T18:30");
+    expect(new Date(iso).getTime()).toBe(new Date("2026-11-21T18:30").getTime());
+    expect(iso.endsWith("Z")).toBe(true);
+    expect(isActive({ status: "uploading" } as never)).toBe(true);
+    expect(isActive({ status: "scheduled" } as never)).toBe(false);
+  });
+});

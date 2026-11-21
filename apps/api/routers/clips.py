@@ -206,12 +206,6 @@ def render_clip(
     return _clip_out(store, clip)
 
 
-@router.post("/clips/{clip_id}/publish", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-def publish_clip(clip_id: UUID, principal: PrincipalDep) -> dict[str, str]:
-    """Auto-publishing arrives in M6. For now: download the final render and post it."""
-    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, "publishing arrives in milestone 6")
-
-
 @router.get("/clips/{clip_id}/download")
 def download_clip(
     clip_id: UUID,

@@ -272,6 +272,12 @@ class Publication(WorkspaceScoped, Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(TS)
     published_at: Mapped[datetime | None] = mapped_column(TS)
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True)
+    # M6 (owner-approved schema change, ADR-0038): the post's own text, so scheduled posts
+    # keep what was reviewed even if the clip's suggestions change later.
+    title: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    privacy: Mapped[str] = mapped_column(String(20), default="private", server_default="private")
+    error: Mapped[str | None] = mapped_column(Text)
 
 
 # ------------------------------------------------------------------ jobs

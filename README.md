@@ -15,7 +15,8 @@ Personal tool first, with SaaS-ready seams. The full spec is in `CLAUDE CODE PRO
 | M3 LLM judge | ✅ (off until you add an API key) |
 | M4 Render | ✅ |
 | M5 Review UI | ✅ (http://127.0.0.1:8080) |
-| M6 Publishing | next |
+| M6 Publishing | ✅ (YouTube; needs your Google OAuth client) |
+| M7 Live mode | next |
 
 ## Quick start
 
@@ -34,5 +35,17 @@ docker compose up -d postgres redis
 uv sync && uv run alembic upgrade head && uv run clipforge seed
 uv run pytest && uv run ruff check . && uv run mypy clipforge apps && uv run lint-imports
 ```
+
+## Publishing to YouTube (one-time setup)
+
+1. In Google Cloud Console, create a project, enable **YouTube Data API v3**, configure the
+   OAuth consent screen (External, add yourself as a test user), and create an OAuth client
+   of type **Desktop app**. Download its JSON.
+2. `uv run clipforge secret-key`, then put the output in `.env` as `CLIPFORGE_SECRET_KEY`.
+   It encrypts the channel token; keep it safe.
+3. `uv run clipforge publish connect-youtube path/to/client_secret.json` and approve in the
+   browser.
+4. Approve a clip in the UI, open **Publish** on its review screen, and post now or schedule.
+   Uploads stay private until Google audits your API project.
 
 See `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, `docs/SAAS_READINESS.md`.

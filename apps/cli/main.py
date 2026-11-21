@@ -15,11 +15,12 @@ from clipforge.domain.values import BlobKey, ClipPolicy, Platform, WorkspaceId
 from clipforge.infra.config import get_settings
 from clipforge.infra.db import models as m
 from clipforge.infra.db.pipeline_store import SqlPipelineStore, stage_overview
+from clipforge.infra.db.publish_store import SqlPublishStore
 from clipforge.infra.db.render_store import SqlRenderStore
 from clipforge.infra.db.session import session_scope
 from clipforge.infra.db.sources import SourceAdmin
 from clipforge.infra.logging import bind_context, configure_logging
-from clipforge.infra.registry import get_container
+from clipforge.infra.registry import connect_youtube, get_container, new_secret_key
 from clipforge.infra.seed import seed as run_seed
 from clipforge.ports.infra import Priority
 from clipforge.ports.pipeline import PipelineError
@@ -479,3 +480,122 @@ def sources_retire(source_id: UUID, reason: str = "") -> None:
 
 if __name__ == "__main__":
     app()
+
+
+# ------------------------------------------------------------------ publishing (M6)
+publish_app = typer.Typer(no_args_is_help=True, help="Publish approved clips (YouTube).")
+app.add_typer(publish_app, name="publish")
+
+
+@app.command("secret-key")
+def secret_key() -> None:
+    """Print a new CLIPFORGE_SECRET_KEY (encrypts OAuth tokens at rest). Keep it safe: losing
+    it means reconnecting every channel."""
+    typer.echo(new_secret_key())
+
+
+@publish_app.command("connect-youtube")
+def connect_youtube_cmd(
+    client_secrets: Annotated[
+        Path, typer.Argument(help="OAuth client JSON (Desktop app) from Google Cloud Console.")
+    ],
+) -> None:
+    """Connect a YouTube channel: opens Google's consent page, stores the token encrypted."""
+    import webbrowser
+
+    def show(url: str) -> None:
+        typer.echo("Open this page to allow ClipForge to upload to your channel:\n")
+        typer.echo(url + "\n")
+        webbrowser.open(url)
+
+    try:
+        title, ref = connect_youtube(get_settings(), _ws(), client_secrets, show)
+    except (PipelineError, ValueError, OSError) as exc:
+        typer.secho(f"not connected: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(1) from exc
+    with session_scope() as session:
+        t = SqlPublishStore(session, _ws(), _actor()).add_target("youtube", title, ref)
+    typer.secho(f"connected YouTube channel '{title}' (target {t.id})", fg=typer.colors.GREEN)
+
+
+@publish_app.command("targets")
+def publish_targets() -> None:
+    with session_scope() as session:
+        for t in SqlPublishStore(session, _ws()).list_targets():
+            state = "enabled" if t.enabled else "disabled"
+            typer.echo(f"{t.id}  {t.platform:<9} {state:<8} {t.account_label}")
+
+
+@publish_app.command("clip")
+def publish_clip_cmd(
+    clip_id: UUID,
+    title: Annotated[str | None, typer.Option(help="Defaults to the top title suggestion.")] = None,
+    privacy: Annotated[str, typer.Option(help="private | unlisted | public")] = "private",
+    at: Annotated[str | None, typer.Option(help="ISO time to publish (UTC if no zone).")] = None,
+    target: Annotated[UUID | None, typer.Option(help="Publish target id.")] = None,
+) -> None:
+    """Schedule an approved clip (now by default); the worker uploads it."""
+    from datetime import UTC, datetime
+
+    when = datetime.fromisoformat(at) if at else None
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    c = get_container()
+    with session_scope() as session:
+        store = SqlPublishStore(session, _ws())
+        tgt = target or (t.id if (t := store.default_target("youtube")) else None)
+        if tgt is None:
+            typer.secho("connect a channel first: clipforge publish connect-youtube", fg="red")
+            raise typer.Exit(1)
+        svc = c.publish_service(session, _ws(), _actor())
+        try:
+            pub = svc.schedule(clip_id, tgt, title=title, privacy=privacy, at=when)
+        except PipelineError as exc:
+            typer.secho(f"refused: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(1) from exc
+        claimed = svc.claim_if_due(pub)
+    if claimed:
+        c.queue.enqueue("publish.run", {"workspace_id": str(_ws()), "publication_id": str(pub.id)})
+    typer.echo(
+        f"publication {pub.id}: {'queued' if claimed else f'scheduled for {pub.scheduled_at}'}"
+    )
+
+
+@publish_app.command("list")
+def publish_list() -> None:
+    with session_scope() as session:
+        store = SqlPublishStore(session, _ws())
+        pubs = store.list_publications(limit=50)
+        perf = store.latest_performance([p.id for p in pubs])
+        for p in pubs:
+            views = perf.get(p.id, {}).get("views")
+            extra = f"{views} views" if views is not None else (p.error or "")
+            typer.echo(f"{p.id}  {p.status:<10} {p.privacy:<8} {p.title[:40]:<40} {extra}")
+
+
+@app.command()
+def scheduler(
+    once: Annotated[bool, typer.Option(help="Run one tick and exit (for cron/tests).")] = False,
+) -> None:
+    """Publishing scheduler: every tick, queue due posts; every few hours, pull stats.
+    The database is the queue, so restarting this loses nothing."""
+    import time
+
+    s = get_settings()
+    c = get_container()
+    last_stats: float | None = None  # None: refresh on startup
+    log_ws = str(_ws())
+    typer.echo(f"scheduler: tick {s.scheduler_tick_s:g}s, stats every {s.stats_refresh_s:g}s")
+    while True:
+        with session_scope() as session:
+            due = c.publish_service(session, _ws()).claim_due()
+        for pub_id in due:
+            c.queue.enqueue("publish.run", {"workspace_id": log_ws, "publication_id": str(pub_id)})
+        if due:
+            typer.echo(f"queued {len(due)} post(s)")
+        if last_stats is None or time.monotonic() - last_stats >= s.stats_refresh_s:
+            c.queue.enqueue("publish.stats", {"workspace_id": log_ws}, priority=Priority.LOW)
+            last_stats = time.monotonic()
+        if once:
+            return
+        time.sleep(s.scheduler_tick_s)

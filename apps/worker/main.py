@@ -103,13 +103,22 @@ def _preview_top(payload: dict[str, Any]) -> None:
 
 def _render(payload: dict[str, Any], kind: str) -> None:
     ws = WorkspaceId(UUID(payload["workspace_id"]))
+    clip_id = UUID(payload["clip_id"])
     with session_scope(commit_on_error=True) as session:
         out = (
             get_container()
             .render_pipeline(session, ws)
-            .render(UUID(payload["clip_id"]), kind, force=bool(payload.get("force")))
+            .render(clip_id, kind, force=bool(payload.get("force")))
         )
     log.info("render_done", kind=kind, cached=out.cached, layout=out.layout)
+    if kind == "final":  # autopublish (off by default; own-channel sources only)
+        c = get_container()
+        with session_scope() as session:
+            svc = c.publish_service(session, ws)
+            pub = svc.maybe_autopublish(clip_id)
+            claimed = pub is not None and svc.claim_if_due(pub)
+        if pub is not None and claimed:
+            c.queue.enqueue("publish.run", {"workspace_id": str(ws), "publication_id": str(pub.id)})
 
 
 @handler("render.preview")
@@ -120,6 +129,22 @@ def _render_preview(payload: dict[str, Any]) -> None:
 @handler("render.final")
 def _render_final(payload: dict[str, Any]) -> None:
     _render(payload, "final")
+
+
+@handler("publish.run")
+def _publish_run(payload: dict[str, Any]) -> None:
+    ws = WorkspaceId(UUID(payload["workspace_id"]))
+    with session_scope(commit_on_error=True) as session:
+        pub = get_container().publish_service(session, ws).run(UUID(payload["publication_id"]))
+    log.info("publish_done", status=pub.status if pub else "missing")
+
+
+@handler("publish.stats")
+def _publish_stats(payload: dict[str, Any]) -> None:
+    ws = WorkspaceId(UUID(payload["workspace_id"]))
+    with session_scope(commit_on_error=True) as session:
+        n = get_container().publish_service(session, ws).refresh_stats()
+    log.info("stats_refreshed", rows=n)
 
 
 @dramatiq.actor(actor_name=DISPATCH_ACTOR, max_retries=3, min_backoff=2_000, max_backoff=60_000)

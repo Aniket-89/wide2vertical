@@ -69,6 +69,15 @@ class Settings(BaseSettings):
     preview_top_n: int = Field(default=5, ge=0)  # auto-previews after analysis; 0 = off
     render_timeout_s: float = 1800
 
+    # Publishing (M6). The key encrypts OAuth tokens at rest (ADR-0039); generate one with
+    # `clipforge secret-key`. Instagram/TikTok are stubs until their app reviews are done.
+    secret_key: SecretStr | None = None
+    enable_instagram_publish: bool = False
+    enable_tiktok_publish: bool = False
+    scheduler_tick_s: float = Field(default=30, ge=5)
+    stats_refresh_s: float = Field(default=6 * 3600, ge=300)
+    stats_window_days: int = Field(default=30, ge=1)
+
     # SaaS stubs
     per_workspace_max_concurrent_jobs: int = Field(default=4, ge=1)
 

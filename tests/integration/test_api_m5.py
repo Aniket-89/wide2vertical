@@ -1,6 +1,6 @@
 # ruff: noqa: F811  (pytest fixtures imported from test_render_m4 are re-bound as args)
 """M5 API additions against Postgres: profiles/styles, re-analysis, candidate clip status,
-publish stub, and the trim-back download fix."""
+and the trim-back download fix."""
 
 from __future__ import annotations
 
@@ -116,11 +116,6 @@ def test_reanalyze_pins_profile_and_queues_job(
         headers=AUTH,
     )
     assert missing.status_code == 404
-
-
-def test_publish_is_501_until_m6(client: TestClient) -> None:
-    r = client.post(f"/api/v1/clips/{UUID(int=1)}/publish", headers=AUTH)
-    assert r.status_code == 501
 
 
 def test_trim_back_serves_the_matching_render(

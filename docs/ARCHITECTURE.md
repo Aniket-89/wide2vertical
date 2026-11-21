@@ -135,6 +135,28 @@ media:  fetch(download, bearer) -> Blob -> object URL -> <video>   (no token in 
 The `web` service binds to loopback on port 8080. To review on a phone, use a private tunnel
 such as Tailscale, or set `CLIPFORGE_WEB_BIND=0.0.0.0` on a trusted LAN.
 
+## Publishing (M6)
+
+```
+approved clip + final render --(POST /clips/{id}/publish | autopublish)--> publications row
+  status: scheduled --(scheduler tick, compare-and-set)--> queued --(worker publish.run)--> uploading
+          --> published (external_id, feedback_events "published") | failed (error)
+scheduler (compose service, `clipforge scheduler`): every 30 s claim due posts; every 6 h
+  enqueue publish.stats -> YouTube statistics -> feedback_events "performance" (M8 dataset)
+```
+
+- Policy (re-checked right before upload): candidate approved, source known (not `unknown`)
+  and not retired, final render exists. An override lets you process a video but never post it.
+- Idempotency: one publication per (clip, target, final-render hash). Uploads claim
+  `queued -> uploading` atomically and never retry automatically, so a duplicate job can't
+  double-post.
+- Credentials: `clipforge publish connect-youtube client_secret.json` runs Google's
+  installed-app consent (loopback + PKCE + state). The refresh token is sealed with the
+  SecretBox into `publish_targets.secret_ref`.
+- Autopublish (off by default): with `ENABLE_AUTOPUBLISH`, an approved own-channel clip is
+  scheduled, private, when its final render completes. Instagram and TikTok are stub adapters
+  behind flags. Design: ADR-0038, ADR-0039.
+
 ## HTTP surface
 
 | Path | Auth | Purpose |
@@ -156,7 +178,10 @@ such as Tailscale, or set `CLIPFORGE_WEB_BIND=0.0.0.0` on a trusted LAN.
 | `POST /api/v1/videos/{id}/analyze` | bearer | `{scoring_profile_id?}`: pin a profile and re-score (signals are cached) |
 | `GET/POST /api/v1/scoring-profiles` | bearer | list; create (an existing name gets the next version) |
 | `GET/POST /api/v1/caption-styles` | bearer | list; create (validated spec, versioned) |
-| `POST /api/v1/clips/{id}/publish` | bearer | `501` until M6 |
+| `GET /api/v1/publish-targets` | bearer | connected channels (no secrets) |
+| `POST /api/v1/clips/{id}/publish` | bearer | `{target_id?, title?, description?, privacy, scheduled_at?}`: schedule or publish now (409 when policy refuses) |
+| `GET /api/v1/publications?clip_id=` | bearer | posts with status, link, error, latest view stats |
+| `POST /api/v1/publications/{id}/cancel` | bearer | cancel a scheduled or queued post |
 | `GET /api/v1/openapi.json`, `/api/v1/docs` | none | OpenAPI |
 
 ## Running locally

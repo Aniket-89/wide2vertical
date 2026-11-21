@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { ClipPlayer, downloadRender, ErrorLine, SignalStrip, StatusChip, TimeRange } from "../components/bits";
+import { PublishPanel } from "../components/publish";
 import { LAYOUT_LABELS, nudge, timecode, type Range } from "../format";
 import { go, useAction, useLoad } from "../hooks";
 import type { CandidatePatch, Clip, ReviewStatus } from "../types";
@@ -244,6 +245,8 @@ export function ReviewPage({ videoId, candidateId }: { videoId: string; candidat
               {clip.credit_text && <p className="muted">Credit included: {clip.credit_text}</p>}
             </details>
           )}
+
+          {clip && cand.status === "approved" && <PublishPanel key={clip.id} clip={clip} suggestedTitle={title} />}
 
           <ErrorLine message={act.error} />
         </section>

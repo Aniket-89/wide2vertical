@@ -359,3 +359,38 @@ including a cache hit (the render service re-saves the reused row), and `latest_
 by `updated_at`. No schema change: the column already existed. A regression test covers the
 A→B→A case.
 
+## ADR-0038 — Publications keep their own text; autopublish = own channel only (2026-11-21)
+Owner-approved schema change (the post-M2 rule): `publications` gains `title`, `description`,
+`privacy` (default `private`) and `error`. It's one additive migration (`d602c1b21390`) with
+no data rewrite. A scheduled post keeps the text that was reviewed even if the clip's
+suggestions change later, and failures are visible in the UI without searching the audit log.
+Autopublish policies: the owner chose **own channel only** (`AUTOPUBLISH_POLICIES`). Even with
+`ENABLE_AUTOPUBLISH` on, a clip must be approved and have a final render; autopublish only
+removes the separate "publish" click, always private, to the first enabled YouTube target.
+Posting needs a source with a known clip policy: an `--override` lets you process a video,
+never publish it.
+
+## ADR-0039 — YouTube publishing: REST + resumable upload, DB-driven scheduler (2026-11-21)
+- The YouTube Data API v3 is called over httpx (BSD), with no Google client library: three
+  endpoints (token, resumable upload, videos.list). Uploads go in 8 MiB chunks. On a network
+  error or 5xx the adapter asks the session how much arrived (`Content-Range: bytes */N`)
+  and resumes. The default privacy is private: YouTube locks uploads from unaudited API
+  projects to private anyway, and the UI says so. Category Gaming; not made for kids.
+- Consent is Google's installed-app flow from the CLI: a one-shot 127.0.0.1 listener, with
+  PKCE + state. The refresh token goes straight into the SecretBox: AES-256-GCM (the
+  `cryptography` package, Apache-2.0/BSD) with the workspace id as AAD. The key is
+  `CLIPFORGE_SECRET_KEY` (`clipforge secret-key`); losing it means reconnecting channels.
+- Error messages carry Google's reason (e.g. `quotaExceeded`), never request headers, so
+  access tokens can't reach logs or the database.
+- Scheduling: the DB is the queue. A small `scheduler` service claims due rows with
+  compare-and-set (`scheduled -> queued`), and the worker claims `queued -> uploading`.
+  Restarts lose nothing and duplicates can't double-post. Upload failures end in `failed`
+  and are not retried automatically, because YouTube has no idempotency key. Re-scheduling
+  a failed or cancelled post reuses its row.
+- Stats pullback: every 6 h, for posts from the last 30 days, `videos.list` (50 ids per
+  call) writes `feedback_events` kind `performance` (views, likes, comments, age_hours). That
+  is the real-world signal M8 tunes against. One list call covers 50 videos, so stats use
+  little quota compared with uploads.
+- Fixed during the live check: the scheduler compared `time.monotonic()` against 0, so the
+  first stats refresh could wait up to 6 h in a fresh container. It now runs on startup.
+

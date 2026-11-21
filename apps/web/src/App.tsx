@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { tokenStore } from "./api";
 import { useRoute } from "./hooks";
+import { PostsPage } from "./pages/Posts";
 import { ReviewPage } from "./pages/Review";
 import { SettingsPage, TokenForm } from "./pages/Settings";
 import { SourcesPage } from "./pages/Sources";
@@ -9,6 +10,7 @@ import { VideosPage } from "./pages/Videos";
 
 const NAV = [
   { path: "", label: "Videos" },
+  { path: "posts", label: "Posts" },
   { path: "sources", label: "Sources" },
   { path: "settings", label: "Settings" },
 ];
@@ -30,6 +32,8 @@ export function App() {
     page = <ReviewPage key={subId} videoId={id} candidateId={subId} />;
   } else if (section === "videos" && id) {
     page = <VideoDetailPage key={id} videoId={id} />;
+  } else if (section === "posts") {
+    page = <PostsPage />;
   } else if (section === "sources") {
     page = <SourcesPage />;
   } else if (section === "settings") {

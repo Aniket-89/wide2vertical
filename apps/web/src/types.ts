@@ -126,3 +126,39 @@ export interface CaptionStyle {
   spec: Record<string, unknown>;
   created_at: string;
 }
+
+export interface PublishTarget {
+  id: string;
+  platform: string;
+  account_label: string;
+  enabled: boolean;
+  connected: boolean;
+}
+
+export type Privacy = "private" | "unlisted" | "public";
+
+export interface Publication {
+  id: string;
+  clip_id: string;
+  target_id: string;
+  platform: string;
+  account_label: string;
+  status: "scheduled" | "queued" | "uploading" | "published" | "failed" | "cancelled";
+  title: string;
+  description: string;
+  privacy: Privacy;
+  scheduled_at: string | null;
+  published_at: string | null;
+  external_id: string | null;
+  url: string | null;
+  error: string | null;
+  stats: { views: number | null; likes: number | null; comments: number | null; at: string } | null;
+}
+
+export interface PublishInput {
+  target_id?: string;
+  title?: string;
+  description?: string;
+  privacy: Privacy;
+  scheduled_at?: string;
+}

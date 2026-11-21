@@ -5,8 +5,10 @@ Config picks adapters; everything else receives ports.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -26,22 +28,32 @@ from clipforge.adapters.judges.openai_compat_judge import OpenAICompatJudge
 from clipforge.adapters.media.facecam_opencv import OpenCvFacecamDetector
 from clipforge.adapters.media.sections import RoutingSectionFetcher
 from clipforge.adapters.misc import AllowAllQuota, SystemClock
+from clipforge.adapters.publishers.stubs import InstagramPublisher, TikTokPublisher
+from clipforge.adapters.publishers.youtube import (
+    YouTubePublisher,
+    loopback_consent,
+    read_client_secrets,
+)
 from clipforge.adapters.queue.dramatiq_queue import DISPATCH_ACTOR, DramatiqJobQueue, make_broker
 from clipforge.adapters.render.ffmpeg_renderer import FfmpegRenderer
 from clipforge.adapters.resolvers.ytdlp import KickResolver, TwitchResolver, YouTubeResolver
+from clipforge.adapters.secrets.aesgcm import AesGcmSecretBox, generate_key
 from clipforge.adapters.transcribers.faster_whisper import FasterWhisperTranscriber
 from clipforge.domain.values import Platform, WorkspaceId
 from clipforge.infra.config import Settings, get_settings
 from clipforge.infra.db.pipeline_store import SqlPipelineStore
+from clipforge.infra.db.publish_store import SqlPublishStore
 from clipforge.infra.db.render_store import SqlRenderStore
 from clipforge.ports.analysis import AudioAnalyzer, ChatProvider
 from clipforge.ports.infra import BlobStore, Clock, EventBus, JobQueue, QuotaService
 from clipforge.ports.judge import LLMJudge
-from clipforge.ports.pipeline import MediaFetcher, SourceResolver, Transcriber
+from clipforge.ports.pipeline import MediaFetcher, PipelineError, SourceResolver, Transcriber
+from clipforge.ports.publish import Publisher, SecretBox
 from clipforge.ports.render import FacecamDetector, Renderer, SectionFetcher
 from clipforge.services.analyze import AnalyzePipeline
 from clipforge.services.ingest import IngestPipeline
 from clipforge.services.judging import JudgeConfig
+from clipforge.services.publish import PublishConfig, PublishService
 from clipforge.services.render import RenderPipeline
 from clipforge.services.review import ReviewService
 from clipforge.signals import default_signals
@@ -72,6 +84,8 @@ class Container:
     sections: SectionFetcher | None = None  # None = real adapters (lazy)
     detector: FacecamDetector | None = None
     renderer: Renderer | None = None
+    publishers: dict[str, Publisher] | None = None  # None = real adapters (lazy)
+    secrets: SecretBox | None = None  # None = built from CLIPFORGE_SECRET_KEY when set
     _queue: JobQueue | None = field(default=None, repr=False)
 
     @property
@@ -115,6 +129,25 @@ class Container:
         self, session: Session, workspace_id: WorkspaceId, actor_user_id: UUID | None = None
     ) -> ReviewService:
         return ReviewService(SqlRenderStore(session, workspace_id, actor_user_id))
+
+    def publish_service(
+        self, session: Session, workspace_id: WorkspaceId, actor_user_id: UUID | None = None
+    ) -> PublishService:
+        if self.publishers is None:
+            self.publishers = build_publishers(self.settings)
+        if self.secrets is None:
+            self.secrets = build_secret_box(self.settings)
+        return PublishService(
+            store=SqlPublishStore(session, workspace_id, actor_user_id),
+            publishers=self.publishers,
+            secrets=self.secrets,
+            blobs=self.blobs,
+            clock=self.clock,
+            cfg=PublishConfig(
+                autopublish=self.settings.enable_autopublish,
+                stats_window_days=self.settings.stats_window_days,
+            ),
+        )
 
     def analyze_pipeline(
         self, session: Session, workspace_id: WorkspaceId, actor_user_id: UUID | None = None
@@ -210,6 +243,41 @@ def build_judge_config(settings: Settings) -> JudgeConfig:
         price_cache_read_per_mtok=settings.llm_price_cache_read_per_mtok,
         price_cache_write_per_mtok=settings.llm_price_cache_write_per_mtok,
     )
+
+
+def build_publishers(settings: Settings) -> dict[str, Publisher]:
+    pubs: dict[str, Publisher] = {"youtube": YouTubePublisher()}
+    if settings.enable_instagram_publish:
+        pubs["instagram"] = InstagramPublisher()
+    if settings.enable_tiktok_publish:
+        pubs["tiktok"] = TikTokPublisher()
+    return pubs
+
+
+def build_secret_box(settings: Settings) -> SecretBox | None:
+    key = settings.secret_key.get_secret_value() if settings.secret_key else ""
+    return AesGcmSecretBox(key) if key else None
+
+
+def new_secret_key() -> str:
+    return generate_key()
+
+
+def connect_youtube(
+    settings: Settings,
+    workspace_id: WorkspaceId,
+    client_secrets: Path,
+    show_url: Callable[[str], None],
+) -> tuple[str, str]:
+    """One-time OAuth consent for a YouTube channel. Returns (channel title, sealed ref);
+    the refresh token never leaves this function unencrypted."""
+    box = build_secret_box(settings)
+    if box is None:
+        raise PipelineError("set CLIPFORGE_SECRET_KEY first (generate one: clipforge secret-key)")
+    client_id, client_secret = read_client_secrets(client_secrets)
+    creds = loopback_consent(client_id, client_secret, show_url)
+    title = YouTubePublisher().channel_title(creds)
+    return title, box.seal(workspace_id, creds.dumps())
 
 
 def build_resolvers(settings: Settings) -> list[SourceResolver]:

@@ -5,6 +5,9 @@ import type {
   CandidatePatch,
   CaptionStyle,
   Clip,
+  Publication,
+  PublishInput,
+  PublishTarget,
   ReviewResult,
   ScoringProfile,
   Source,
@@ -106,6 +109,12 @@ export function createClient(
       post<ScoringProfile>("/scoring-profiles", p),
     listStyles: () => json<CaptionStyle[]>("/caption-styles"),
     addStyle: (s: Pick<CaptionStyle, "name" | "spec">) => post<CaptionStyle>("/caption-styles", s),
+
+    listTargets: () => json<PublishTarget[]>("/publish-targets"),
+    publish: (clipId: string, body: PublishInput) => post<Publication>(`/clips/${clipId}/publish`, body),
+    listPublications: (clipId?: string) =>
+      json<Publication[]>(clipId ? `/publications?clip_id=${clipId}` : "/publications"),
+    cancelPublication: (id: string) => post<Publication>(`/publications/${id}/cancel`),
   };
 }
 
