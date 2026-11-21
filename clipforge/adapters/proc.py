@@ -7,6 +7,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024  # stdout cap (yt-dlp -J on a long VOD can be a few MB)
 MAX_ERR_CHARS = 4000
@@ -27,12 +28,12 @@ class ProcResult:
     stderr: str
 
 
-def run(args: Sequence[str], *, timeout_s: float) -> ProcResult:
+def run(args: Sequence[str], *, timeout_s: float, cwd: Path | None = None) -> ProcResult:
     if isinstance(args, str):  # defensive: a str is a Sequence[str] too
         raise TypeError("pass an argument list, not a string")
     try:
         cp = subprocess.run(  # noqa: S603 - args is a list, shell=False
-            list(args), capture_output=True, timeout=timeout_s, check=False, shell=False
+            list(args), capture_output=True, timeout=timeout_s, check=False, shell=False, cwd=cwd
         )
     except subprocess.TimeoutExpired as exc:
         err = (exc.stderr or b"")[-MAX_ERR_CHARS:].decode("utf-8", "replace")

@@ -10,7 +10,7 @@ Status key: ✅ done · 🟡 seam exists, not built · ⬜ not started
 | Composite `(workspace_id, id)` FKs | ⬜ | DB-level backstop against cross-tenant references; app layer already validates (e.g. `scoring_profile_id`). Schema change: ask first (post-M2 rule) |
 | AuthN/AuthZ seam (`current_principal`) | 🟡 | Static token → seeded workspace; roles in `memberships` |
 | Role checks (owner/editor/viewer) | ⬜ | `Principal.role` is carried; not enforced yet |
-| Metering (`usage_events`) | 🟡 | `storage_bytes`, `transcribe_minutes` (M1); `llm_tokens_in/out` + `llm_cost_usd_est` (M3); render seconds come in M4 |
+| Metering (`usage_events`) | ✅ | `storage_bytes`, `transcribe_minutes`, `llm_tokens_in/out`, `llm_cost_usd_est`, `render_seconds`; GB-day storage accounting still TODO |
 | Quotas / rate limits (`QuotaService`) | 🟡 | `AllowAllQuota`; transcribe stage already calls `check()` |
 | Billing | ⬜ | Intentionally absent; `usage_events` is the contract |
 | Job isolation: per-priority queues | ✅ | ADR-0002 |

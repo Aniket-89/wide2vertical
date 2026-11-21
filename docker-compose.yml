@@ -49,7 +49,8 @@ services:
     <<: *python
     command: ["dramatiq", "apps.worker.main", "--processes", "1", "--threads", "2",
               "--queues", "default", "default_high", "default_low",
-              "transcribe", "transcribe_high", "transcribe_low"]  # drop transcribe* when worker-gpu runs
+              "transcribe", "transcribe_high", "transcribe_low",
+              "render", "render_high", "render_low"]  # drop transcribe* when worker-gpu runs
     depends_on:
       migrate: { condition: service_completed_successfully }
 

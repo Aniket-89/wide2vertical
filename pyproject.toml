@@ -24,6 +24,7 @@ dependencies = [
     "numpy>=2.5.5",
     "anthropic>=2.12.0",
     "openai>=3.57.0",
+    "opencv-python-headless>=4.10,<5",
 ]
 
 [dependency-groups]
@@ -60,6 +61,7 @@ ignore = ["S101"]  # assert is fine in tests
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PTH"]
 "migrations/**" = ["E501", "W291"]
+"clipforge/rendering/captions.py" = ["E501"]  # ASS style/format lines are long by spec
 
 # ---------------------------------------------------------------- mypy
 [tool.mypy]
@@ -101,7 +103,7 @@ name = "Core never imports adapters or infra"
 type = "forbidden"
 source_modules = [
     "clipforge.ports", "clipforge.services", "clipforge.signals",
-    "clipforge.scoring", "clipforge.compliance",
+    "clipforge.scoring", "clipforge.compliance", "clipforge.rendering",
 ]
 forbidden_modules = ["clipforge.adapters", "clipforge.infra", "apps"]
 

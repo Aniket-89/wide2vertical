@@ -19,6 +19,8 @@ jobs:
       CLIPFORGE_TEST_DATABASE_URL: postgresql+psycopg://clipforge:clipforge@127.0.0.1:5432/clipforge_test
     steps:
       - uses: actions/checkout@v4
+      - name: ffmpeg + fonts (real render tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - uses: astral-sh/setup-uv@v5
         with: { enable-cache: true }
       - run: uv sync --frozen --python 3.12

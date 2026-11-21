@@ -102,6 +102,21 @@ Runs as stage `judge` after `candidates` in `pipeline.analyze` (worker) and `cli
 (`--no-judge` to skip). Off unless `CLIPFORGE_ENABLE_LLM_JUDGE=true` and the provider's key are
 both set; `CLIPFORGE_LLM_PROVIDER` picks the adapter (ADR-0030). Prompts: `docs/PROMPTS.md`. Design: ADR-0027..0029.
 
+## Render & review (M4)
+
+```
+candidate --(preview / approve)--> clip (layout auto, credit from source, intro, caption edits)
+  -> section   YouTube: yt-dlp --download-sections | Twitch/Kick: HLS segment fetch (cached)
+  -> layout    OpenCV faces -> rendering/layout.py (facecam / center_crop / blur bg | override)
+  -> captions  rendering/captions.py: word-by-word ASS from Whisper words (+ credit, intro)
+  -> render    FfmpegRenderer: cut + reframe + burn captions + loudnorm -> MP4
+  -> blob ws/<ws>/clips/<clip>/<kind>-<hash>.mp4, clip_renders row, usage render_seconds
+review: PATCH /candidates/{id} -> ReviewService -> feedback_events (+ final render job)
+```
+
+Worker: `pipeline.analyze` -> `render.preview_top` -> one `render.preview` per clip
+(queue `render`); approval -> `render.final`. Design: ADR-0031..0034.
+
 ## HTTP surface
 
 | Path | Auth | Purpose |
@@ -114,6 +129,11 @@ both set; `CLIPFORGE_LLM_PROVIDER` picks the adapter (ADR-0030). Prompts: `docs/
 | `GET /api/v1/videos`, `GET /api/v1/videos/{id}` | bearer | list (limit/offset); detail with per-stage status |
 | `GET/POST /api/v1/sources`, `PATCH /api/v1/sources/{id}` | bearer | allowlist management |
 | `POST /api/v1/sources/{id}/retire` | bearer | takedown: block the source and hide its clips |
+| `PATCH /api/v1/candidates/{id}` | bearer | approve/reject/trim/caption/layout/crop/intro; queues the final render when needed |
+| `POST /api/v1/candidates/{id}/preview` | bearer | create the clip and queue a preview |
+| `GET /api/v1/clips/{id}` | bearer | clip + renders + export description (with credit) + warnings |
+| `POST /api/v1/clips/{id}/render` | bearer | `{kind: preview|final, force}`; final needs approval (409) |
+| `GET /api/v1/clips/{id}/download?kind=` | bearer | the rendered MP4 |
 | `GET /api/v1/videos/{id}/candidates` | bearer | ranked candidates: per-signal components, reason, judge verdict, `title_suggestions`, `hook_text` |
 | `GET /api/v1/openapi.json`, `/api/v1/docs` | none | OpenAPI |
 
@@ -131,6 +151,10 @@ uv run clipforge status <video_id>
 uv run clipforge analyze <video_id> [--profile p] [--dry-run]   # signals + candidates
 uv run clipforge candidates <video_id>
 uv run clipforge eval --labels tests/fixtures/labels.json
+uv run clipforge preview <candidate_id>            # 540x960 preview
+uv run clipforge approve <candidate_id> [--start --end --caption --layout --intro]  # + final render
+uv run clipforge reject <candidate_id>
+uv run clipforge export <clip_id> --out clip.mp4   # prints the post description incl. credit
 uv run pytest                          # CLIPFORGE_NETWORK_TESTS=1 also runs real yt-dlp/whisper
 # or everything in containers:
 docker compose up --build

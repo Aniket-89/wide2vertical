@@ -58,11 +58,16 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     judge_batch_size: int = Field(default=8, ge=1, le=25)
     judge_max_windows_per_video: int = Field(default=150, ge=1)
+
     # USD per 1M tokens, for the cost estimate in usage_events (Haiku 5.5, <=100K prompts)
     llm_price_in_per_mtok: float = 0.10
     llm_price_out_per_mtok: float = 0.50
     llm_price_cache_read_per_mtok: float = 0.01
     llm_price_cache_write_per_mtok: float = 0.125
+
+    # Render (M4)
+    preview_top_n: int = Field(default=5, ge=0)  # auto-previews after analysis; 0 = off
+    render_timeout_s: float = 1800
 
     # SaaS stubs
     per_workspace_max_concurrent_jobs: int = Field(default=4, ge=1)

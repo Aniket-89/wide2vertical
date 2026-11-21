@@ -52,6 +52,17 @@ from clipforge.ports.pipeline import (
     VideoRecord,
     Word,
 )
+from clipforge.ports.render import (
+    CandidateRecord,
+    CaptionStyleRecord,
+    ClipRecord,
+    RenderFailed,
+    RenderRecord,
+    RenderResult,
+    RenderSpec,
+    SectionFile,
+)
+from clipforge.rendering.layout import FrameFaces
 
 
 class FakeResolver:
@@ -466,3 +477,184 @@ class FakeJudge:
             for it in items
         ]
         return JudgeResult(verdicts, JudgeUsage(input_tokens=100 * len(items), output_tokens=40))
+
+
+# ====================================================================== M4 fakes
+@dataclass
+class InMemoryRenderStore(InMemoryAnalysisStore):
+    clips: dict[UUID, ClipRecord] = field(default_factory=dict)
+    renders: dict[tuple[UUID, str, str], RenderRecord] = field(default_factory=dict)
+    feedback: list[dict[str, Any]] = field(default_factory=list)
+    styles: list[CaptionStyleRecord] = field(default_factory=list)
+    source_crops: dict[UUID, dict[str, Any]] = field(default_factory=dict)
+
+    def _find_candidate(self, candidate_id: UUID) -> tuple[UUID, int, StoredCandidate] | None:
+        for vid, rows in self.candidates.items():
+            for i, c in enumerate(rows):
+                if c.id == candidate_id:
+                    return vid, i, c
+        return None
+
+    def get_candidate(self, candidate_id: UUID) -> CandidateRecord | None:
+        hit = self._find_candidate(candidate_id)
+        if hit is None:
+            return None
+        vid, _, c = hit
+        return CandidateRecord(
+            c.id,
+            vid,
+            self.candidate_profile[c.id],
+            c.start_s,
+            c.end_s,
+            c.score,
+            c.rank,
+            dict(c.components),
+            c.status,
+            c.title_suggestions,
+            c.hook_text,
+            c.reason,
+            c.judge,
+        )
+
+    def set_candidate_status(self, candidate_id: UUID, status: str) -> None:
+        hit = self._find_candidate(candidate_id)
+        if hit is not None:
+            vid, i, c = hit
+            self.candidates[vid][i] = replace(c, status=status)
+
+    def get_clip(self, clip_id: UUID) -> ClipRecord | None:
+        return self.clips.get(clip_id)
+
+    def get_clip_for_candidate(self, candidate_id: UUID) -> ClipRecord | None:
+        return next((c for c in self.clips.values() if c.candidate_id == candidate_id), None)
+
+    def create_clip(self, candidate: CandidateRecord, credit_text: str) -> ClipRecord:
+        existing = self.get_clip_for_candidate(candidate.id)
+        if existing is not None:
+            return existing
+        clip = ClipRecord(
+            new_id(),
+            candidate.id,
+            candidate.video_id,
+            candidate.start_s,
+            candidate.end_s,
+            "auto",
+            None,
+            None,
+            None,
+            "",
+            credit_text,
+        )
+        self.clips[clip.id] = clip
+        return clip
+
+    def update_clip(self, clip_id: UUID, **fields: Any) -> ClipRecord:
+        clip = replace(self.clips[clip_id], **fields)
+        self.clips[clip_id] = clip
+        return clip
+
+    def get_caption_style(self, style_id: UUID | None) -> CaptionStyleRecord:
+        if not self.styles:
+            self.styles.append(CaptionStyleRecord(new_id(), "default", {"font": "DejaVu Sans"}))
+        if style_id is None:
+            return self.styles[0]
+        for s in self.styles:
+            if s.id == style_id:
+                return s
+        raise PipelineError("caption style not found")
+
+    def source_crop_override(self, source_id: UUID | None) -> dict[str, Any] | None:
+        return self.source_crops.get(source_id) if source_id else None
+
+    def find_render(self, clip_id: UUID, kind: str, render_hash: str) -> RenderRecord | None:
+        return self.renders.get((clip_id, kind, render_hash))
+
+    def latest_render(self, clip_id: UUID, kind: str) -> RenderRecord | None:
+        ok = [
+            r
+            for (cid, k, _), r in self.renders.items()
+            if cid == clip_id and k == kind and r.status == "succeeded"
+        ]
+        return ok[-1] if ok else None
+
+    def save_render(
+        self,
+        clip_id: UUID,
+        kind: str,
+        render_hash: str,
+        *,
+        status: str,
+        blob_key: str | None = None,
+        duration_s: float | None = None,
+        render_seconds: float | None = None,
+    ) -> RenderRecord:
+        prev = self.renders.get((clip_id, kind, render_hash))
+        r = RenderRecord(
+            prev.id if prev else new_id(),
+            clip_id,
+            kind,
+            render_hash,
+            blob_key,
+            status,
+            duration_s,
+            render_seconds,
+        )
+        self.renders.pop((clip_id, kind, render_hash), None)
+        self.renders[(clip_id, kind, render_hash)] = r
+        return r
+
+    def record_feedback(
+        self, kind: str, candidate_id: UUID | None, clip_id: UUID | None, **payload: Any
+    ) -> None:
+        self.feedback.append(
+            {"kind": kind, "candidate_id": candidate_id, "clip_id": clip_id, **payload}
+        )
+
+
+class FakeSectionFetcher:
+    """Writes a placeholder file; records requests. ``fail`` simulates a fetch error."""
+
+    def __init__(self, fail: bool = False, align_s: float = 0.0) -> None:
+        self.fail = fail
+        self.align_s = align_s  # simulate HLS segment alignment (file starts earlier)
+        self.calls: list[tuple[float, float, int]] = []
+
+    def fetch_section(
+        self, video: ResolvedVideo, start_s: float, end_s: float, workdir: Path, max_height: int
+    ) -> SectionFile:
+        self.calls.append((start_s, end_s, max_height))
+        if self.fail:
+            raise FetchFailed("fake: section download failed")
+        p = workdir / "section.mp4"
+        p.write_bytes(b"fake-video")
+        start = max(0.0, start_s - self.align_s)
+        return SectionFile(p, start, end_s - start)
+
+
+class FakeFacecamDetector:
+    def __init__(self, faces: FrameFaces | None = None) -> None:
+        self.faces = faces or FrameFaces(1920, 1080, [[] for _ in range(8)])
+        self.calls = 0
+
+    def analyze(self, video: Path, times_s: Sequence[float]) -> FrameFaces:
+        self.calls += 1
+        return self.faces
+
+
+class FakeRenderer:
+    """Records specs and writes a placeholder MP4. ``fail`` simulates an ffmpeg crash."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.specs: list[RenderSpec] = []
+
+    @property
+    def version(self) -> str:
+        return "fake-renderer-1"
+
+    def render(self, spec: RenderSpec) -> RenderResult:
+        self.specs.append(spec)
+        if self.fail:
+            raise RenderFailed("fake: ffmpeg crashed")
+        spec.output.write_bytes(b"fake-mp4:" + spec.quality.encode())
+        return RenderResult(spec.duration_s, 0.5)

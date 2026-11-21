@@ -256,3 +256,57 @@ and Pydantic validation as `AnthropicJudge`, so verdicts look the same everywher
   the model you actually use, or the per-video cost report will be wrong.
 - Prompt caching via `cache_control` is Anthropic-only; on other providers caching (if any) is
   automatic and reported through `prompt_tokens_details.cached_tokens`.
+
+## ADR-0031 — Getting the clip's video: sections, HLS segments, ffmpeg versions (2026-11-21)
+Spec §4.8: never download the whole VOD to render a clip.
+- **YouTube:** `yt-dlp --download-sections --force-keyframes-at-cuts` (frame-accurate start,
+  verified 12.0 s for a 12 s request).
+- **Twitch/Kick (HLS):** ffmpeg 5.1 (Debian 12) *and* 7.1 (Debian 13) can't seek in Twitch
+  playlists with mid-stream `EXT-X-MAP` changes. They streamed 166 MB from the start and output
+  nothing; host ffmpeg 8 works. Pulling a third-party static ffmpeg 8 image was blocked by the
+  environment's safety policy (unvetted binary), and a cleaner fix existed anyway:
+  `HlsSegmentFetcher` parses the media playlist, picks only the segments overlapping the window
+  from the EXTINF timeline, downloads them with retries (this network corrupts TLS sessions),
+  and remuxes locally. The file's VOD start time is exact. Real run: 40 s of 720p in 5.6 s,
+  16 MB.
+- The image moved to `python:3.12-slim-trixie` (ffmpeg 7.1, `fonts-montserrat`). That also
+  fixed a stray `\n` in the old Dockerfile's `mkdir` line.
+- Sections are fetched with ±1 s padding and cached in the BlobStore with a JSON sidecar
+  (start time, duration), so re-renders and small trims need no re-download.
+
+## ADR-0032 — Layout selection and facecam detection (2026-11-21)
+- OpenCV **4.x** Haar frontal-face cascade (pinned `<5`; OpenCV 5 dropped the bundled cascades,
+  and YuNet needs a model download). Frames are decoded with PyAV, which is already a dependency.
+- Auto rules (`rendering/layout.py`, pure): no stable face → `gameplay_blur_background` (never
+  hides anything); a large face → `center_crop` following it; a small face → facecam layout
+  **only if** it's stable (a webcam doesn't move), dominant (one face, or ≥2.5× the next) and
+  near an edge/corner.
+- The dominance and edge rules were added after a real false positive: a static wide shot of a
+  stage panel (several small still faces) was stacked as a "facecam". Regression tests now
+  cover that case. `LAYOUT_RULES_VERSION` is part of the render hash, so a rule change
+  invalidates old renders.
+- Manual overrides use normalised `[x, y, w, h]` rects (any resolution), per clip or per source
+  (`sources.crop_override`).
+
+## ADR-0033 — Render pipeline: preview vs final, idempotency (2026-11-21)
+- Preview: 540×960, x264 veryfast CRF 28, from a ≤720p section; auto-rendered for the top
+  `PREVIEW_TOP_N` (5) candidates after analysis. Final: 1080×1920, x264 slow CRF 20, ≤1080p
+  section; rendered only on approval (or editing an approved clip). Both use loudnorm −14 LUFS,
+  AAC 48 kHz, 30 fps and faststart.
+- One ffmpeg pass: input-seek cut, layout filtergraph, burned ASS captions, loudness. Captions
+  are word-by-word highlighted, the transcript text is sanitised against ASS override injection,
+  and lines are placed above the platform-UI safe area.
+- The render hash covers renderer version, layout rules, kind, source, times, layout/crop,
+  caption words with timings, style, credit and intro. Same hash + existing blob → reuse.
+  Renders and their failures go in `clip_renders` (status) and `audit_log` (error). No schema
+  change: `clip_renders` has no error column, so errors live in the audit log.
+- Render jobs go on their own `render` queue family, so encodes don't block analysis.
+
+## ADR-0034 — Review actions and feedback events (2026-11-21)
+`ReviewService` handles approve, reject, reset, trim, caption edit, layout, style, crop and
+intro. Every change writes a `feedback_events` row. Approve/reject/trim rows include a snapshot
+of what the scorer believed (score, rank, components, judge overall/model): that is the M8
+training set. Validation: clip length 5–180 s, inside the video; layouts and crop rects are
+checked; approval re-checks takedowns.
+`export_description` always appends the source's required credit. A clip with no intro and
+unedited captions carries the YouTube reused-content warning (spec §2).

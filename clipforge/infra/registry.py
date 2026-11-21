@@ -23,26 +23,37 @@ from clipforge.adapters.fetchers.ytdlp import YtDlpFetcher
 from clipforge.adapters.judges.anthropic_judge import AnthropicJudge
 from clipforge.adapters.judges.null_judge import NullJudge
 from clipforge.adapters.judges.openai_compat_judge import OpenAICompatJudge
+from clipforge.adapters.media.facecam_opencv import OpenCvFacecamDetector
+from clipforge.adapters.media.sections import RoutingSectionFetcher
 from clipforge.adapters.misc import AllowAllQuota, SystemClock
 from clipforge.adapters.queue.dramatiq_queue import DISPATCH_ACTOR, DramatiqJobQueue, make_broker
+from clipforge.adapters.render.ffmpeg_renderer import FfmpegRenderer
 from clipforge.adapters.resolvers.ytdlp import KickResolver, TwitchResolver, YouTubeResolver
 from clipforge.adapters.transcribers.faster_whisper import FasterWhisperTranscriber
 from clipforge.domain.values import Platform, WorkspaceId
 from clipforge.infra.config import Settings, get_settings
 from clipforge.infra.db.pipeline_store import SqlPipelineStore
+from clipforge.infra.db.render_store import SqlRenderStore
 from clipforge.ports.analysis import AudioAnalyzer, ChatProvider
 from clipforge.ports.infra import BlobStore, Clock, EventBus, JobQueue, QuotaService
 from clipforge.ports.judge import LLMJudge
 from clipforge.ports.pipeline import MediaFetcher, SourceResolver, Transcriber
+from clipforge.ports.render import FacecamDetector, Renderer, SectionFetcher
 from clipforge.services.analyze import AnalyzePipeline
 from clipforge.services.ingest import IngestPipeline
 from clipforge.services.judging import JudgeConfig
+from clipforge.services.render import RenderPipeline
+from clipforge.services.review import ReviewService
 from clipforge.signals import default_signals
 
 log = structlog.get_logger(__name__)
 
 # Job kinds → base queue. Transcription has its own queue family so GPU workers can own it.
-QUEUE_FOR_KIND: dict[str, str] = {"pipeline.transcribe": "transcribe"}
+QUEUE_FOR_KIND: dict[str, str] = {
+    "pipeline.transcribe": "transcribe",
+    "render.preview": "render",
+    "render.final": "render",
+}
 
 
 @dataclass
@@ -58,6 +69,9 @@ class Container:
     audio: AudioAnalyzer = field(default_factory=PyAvRmsAnalyzer)
     chat_overrides: dict[Platform, ChatProvider] | None = None  # tests inject fakes here
     judge_override: LLMJudge | None = None  # tests inject fakes here
+    sections: SectionFetcher | None = None  # None = real adapters (lazy)
+    detector: FacecamDetector | None = None
+    renderer: Renderer | None = None
     _queue: JobQueue | None = field(default=None, repr=False)
 
     @property
@@ -78,6 +92,29 @@ class Container:
             events=self.events,
             quota=self.quota,
         )
+
+    def render_pipeline(
+        self, session: Session, workspace_id: WorkspaceId, actor_user_id: UUID | None = None
+    ) -> RenderPipeline:
+        if self.sections is None:
+            self.sections = RoutingSectionFetcher()
+        if self.detector is None:
+            self.detector = OpenCvFacecamDetector()
+        if self.renderer is None:
+            self.renderer = FfmpegRenderer(timeout_s=self.settings.render_timeout_s)
+        return RenderPipeline(
+            store=SqlRenderStore(session, workspace_id, actor_user_id),
+            sections=self.sections,
+            detector=self.detector,
+            renderer=self.renderer,
+            blobs=self.blobs,
+            events=self.events,
+        )
+
+    def review_service(
+        self, session: Session, workspace_id: WorkspaceId, actor_user_id: UUID | None = None
+    ) -> ReviewService:
+        return ReviewService(SqlRenderStore(session, workspace_id, actor_user_id))
 
     def analyze_pipeline(
         self, session: Session, workspace_id: WorkspaceId, actor_user_id: UUID | None = None

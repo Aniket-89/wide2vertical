@@ -11,10 +11,11 @@ import typer
 from sqlalchemy import select
 
 from clipforge.domain.urls import parse_video_url
-from clipforge.domain.values import ClipPolicy, Platform, WorkspaceId
+from clipforge.domain.values import BlobKey, ClipPolicy, Platform, WorkspaceId
 from clipforge.infra.config import get_settings
 from clipforge.infra.db import models as m
 from clipforge.infra.db.pipeline_store import SqlPipelineStore, stage_overview
+from clipforge.infra.db.render_store import SqlRenderStore
 from clipforge.infra.db.session import session_scope
 from clipforge.infra.db.sources import SourceAdmin
 from clipforge.infra.logging import bind_context, configure_logging
@@ -22,9 +23,12 @@ from clipforge.infra.registry import get_container
 from clipforge.infra.seed import seed as run_seed
 from clipforge.ports.infra import Priority
 from clipforge.ports.pipeline import PipelineError
+from clipforge.rendering.layout import LAYOUTS
 from clipforge.scoring.evaluate import EvalResult, evaluate_at_k
 from clipforge.services.analyze import AnalyzeResult
 from clipforge.services.ingest import SourceNotAllowed
+from clipforge.services.render import export_description
+from clipforge.services.review import reused_content_warnings
 
 app = typer.Typer(no_args_is_help=True, help="ClipForge: stream VODs in, vertical clips out.")
 sources_app = typer.Typer(no_args_is_help=True, help="Manage the source allowlist.")
@@ -286,6 +290,122 @@ def eval_cmd(
             p = sum(r.precision for r in rs) / len(rs)
             rc = sum(r.recall for r in rs) / len(rs)
             typer.echo(f"mean over {len(rs)} video(s): P@{kk}={p:.3f}  R@{kk}={rc:.3f}")
+
+
+# ------------------------------------------------------------------ review & render (M4)
+def _render_now(clip_id: UUID, kind: str, force: bool = False) -> None:
+    with session_scope(commit_on_error=True) as session:
+        out = (
+            get_container()
+            .render_pipeline(session, _ws(), _actor())
+            .render(clip_id, kind, force=force)
+        )
+    tag = "cached" if out.cached else f"{out.render.render_seconds}s"
+    typer.echo(f"{kind} ready ({tag}): layout={out.layout} ({out.layout_reason})")
+    typer.echo(f"  blob: {out.render.blob_key}")
+
+
+@app.command()
+def preview(candidate_id: UUID) -> None:
+    """Render a low-res preview of a candidate (creates its clip)."""
+    try:
+        with session_scope(commit_on_error=True) as session:
+            clip = (
+                get_container().render_pipeline(session, _ws(), _actor()).ensure_clip(candidate_id)
+            )
+        typer.echo(f"clip {clip.id}")
+        _render_now(clip.id, "preview")
+    except PipelineError as exc:
+        typer.secho(f"failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+
+def _review(candidate_id: UUID, **kwargs: object) -> None:
+    try:
+        with session_scope() as session:
+            out = (
+                get_container()
+                .review_service(session, _ws(), _actor())
+                .update(
+                    candidate_id,
+                    **kwargs,  # type: ignore[arg-type]
+                )
+            )
+    except PipelineError as exc:
+        typer.secho(f"refused: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"candidate {candidate_id}: {out.candidate.status}  changes={out.changes}")
+    if out.clip is not None:
+        for w in reused_content_warnings(out.clip):
+            typer.secho(f"warning: {w}", fg=typer.colors.YELLOW)
+    if out.final_render_needed and out.clip is not None:
+        typer.echo("rendering final (1080x1920)…")
+        _render_now(out.clip.id, "final")
+
+
+@app.command()
+def approve(
+    candidate_id: UUID,
+    start: Annotated[float | None, typer.Option(help="Trim: new start (s)")] = None,
+    end: Annotated[float | None, typer.Option(help="Trim: new end (s)")] = None,
+    caption: Annotated[str | None, typer.Option(help="Replace caption text")] = None,
+    layout: Annotated[str | None, typer.Option(help="auto | " + " | ".join(LAYOUTS))] = None,
+    intro: Annotated[str | None, typer.Option(help="Intro/commentary overlay text")] = None,
+) -> None:
+    """Approve a candidate (optionally trimming/editing it) and render the final MP4."""
+    _review(
+        candidate_id,
+        status="approved",
+        start_s=start,
+        end_s=end,
+        caption_text=caption,
+        layout=layout,
+        commentary_text=intro,
+    )
+
+
+@app.command()
+def reject(candidate_id: UUID) -> None:
+    """Reject a candidate (recorded as training feedback)."""
+    _review(candidate_id, status="rejected")
+
+
+@app.command()
+def render(
+    clip_id: UUID,
+    kind: Annotated[str, typer.Option(help="preview | final")] = "final",
+    force: bool = False,
+) -> None:
+    """(Re-)render a clip. Unchanged inputs reuse the stored file unless --force."""
+    try:
+        _render_now(clip_id, kind, force)
+    except PipelineError as exc:
+        typer.secho(f"failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+
+@app.command()
+def export(
+    clip_id: UUID,
+    out: Annotated[Path, typer.Option(help="Where to write the MP4")],
+    kind: Annotated[str, typer.Option(help="preview | final")] = "final",
+) -> None:
+    """Copy a rendered clip out and print its post description (incl. required credit)."""
+    with session_scope() as session:
+        store = SqlRenderStore(session, _ws())
+        clip = store.get_clip(clip_id)
+        r = store.latest_render(clip_id, kind) if clip else None
+        cand = store.get_candidate(clip.candidate_id) if clip else None
+    if clip is None or r is None or not r.blob_key:
+        typer.secho(f"no {kind} render for that clip", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    with get_container().blobs.open_local(BlobKey(r.blob_key)) as src:
+        out.write_bytes(src.read_bytes())
+    title = cand.title_suggestions[0] if cand and cand.title_suggestions else ""
+    typer.echo(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)\n")
+    typer.echo(export_description(title, cand.hook_text if cand else "", clip.credit_text))
+    for w in reused_content_warnings(clip):
+        typer.secho(f"\nwarning: {w}", fg=typer.colors.YELLOW)
 
 
 # ------------------------------------------------------------------ sources

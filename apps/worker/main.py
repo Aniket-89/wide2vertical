@@ -77,6 +77,49 @@ def _analyze(payload: dict[str, Any]) -> None:
             .analyze(video_id, payload.get("scoring_profile"))
         )
     log.info("analyzed", candidates=len(res.candidates), chat=res.chat_status, signals=res.signals)
+    n = get_container().settings.preview_top_n
+    if n > 0:  # auto-previews of the best candidates so review can start right away
+        get_container().queue.enqueue(
+            "render.preview_top", {**payload, "n": n}, priority=Priority.LOW
+        )
+
+
+@handler("render.preview_top")
+def _preview_top(payload: dict[str, Any]) -> None:
+    ws, video_id = _ids(payload)
+    c = get_container()
+    with session_scope(commit_on_error=True) as session:
+        pipe = c.render_pipeline(session, ws)
+        clip_ids = [
+            str(pipe.ensure_clip(cand.id).id)
+            for cand in pipe.store.list_candidates(video_id, limit=int(payload.get("n", 5)))
+            if cand.status != "rejected"
+        ]
+    for clip_id in clip_ids:  # one job per clip: one failed render doesn't block the others
+        c.queue.enqueue(
+            "render.preview", {"workspace_id": str(ws), "clip_id": clip_id}, priority=Priority.LOW
+        )
+
+
+def _render(payload: dict[str, Any], kind: str) -> None:
+    ws = WorkspaceId(UUID(payload["workspace_id"]))
+    with session_scope(commit_on_error=True) as session:
+        out = (
+            get_container()
+            .render_pipeline(session, ws)
+            .render(UUID(payload["clip_id"]), kind, force=bool(payload.get("force")))
+        )
+    log.info("render_done", kind=kind, cached=out.cached, layout=out.layout)
+
+
+@handler("render.preview")
+def _render_preview(payload: dict[str, Any]) -> None:
+    _render(payload, "preview")
+
+
+@handler("render.final")
+def _render_final(payload: dict[str, Any]) -> None:
+    _render(payload, "final")
 
 
 @dramatiq.actor(actor_name=DISPATCH_ACTOR, max_retries=3, min_backoff=2_000, max_backoff=60_000)
