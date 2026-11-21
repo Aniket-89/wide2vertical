@@ -92,14 +92,15 @@ recall@K without writing candidates.
 candidates (pending, by signal score)
   -> top judge_top_n_per_hour x hours (cap 150)
   -> per window: transcript excerpt + signal hints -> cache lookup (BlobStore judge-cache/)
-  -> uncached, batched by 8 -> LLMJudge (AnthropicJudge | NullJudge | FakeJudge)
+  -> uncached, batched by 8 -> LLMJudge (AnthropicJudge | OpenAICompatJudge [OpenRouter, Groq,
+                               any OpenAI-compatible URL] | NullJudge | FakeJudge)
   -> final score = blend(signal, judge.overall, w); titles[3], hook, reason, verdict JSON
   -> rerank; usage_events: llm_tokens_in / llm_tokens_out / llm_cost_usd_est
 ```
 
 Runs as stage `judge` after `candidates` in `pipeline.analyze` (worker) and `clipforge analyze`
-(`--no-judge` to skip). Off unless `CLIPFORGE_ENABLE_LLM_JUDGE=true` and
-`CLIPFORGE_ANTHROPIC_API_KEY` are both set. Prompts: `docs/PROMPTS.md`. Design: ADR-0027..0029.
+(`--no-judge` to skip). Off unless `CLIPFORGE_ENABLE_LLM_JUDGE=true` and the provider's key are
+both set; `CLIPFORGE_LLM_PROVIDER` picks the adapter (ADR-0030). Prompts: `docs/PROMPTS.md`. Design: ADR-0027..0029.
 
 ## HTTP surface
 

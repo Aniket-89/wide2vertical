@@ -12,10 +12,19 @@ import pytest
 
 from clipforge.adapters.fakes.pipeline import FakeJudge
 from clipforge.adapters.judges.anthropic_judge import AnthropicJudge
+from clipforge.adapters.judges.openai_compat_judge import OpenAICompatJudge
 from clipforge.ports.judge import CATEGORIES, JudgeInput, LLMJudge
 
+NET = os.environ.get("CLIPFORGE_NETWORK_TESTS") == "1"
 KEY = os.environ.get("CLIPFORGE_ANTHROPIC_API_KEY", "")
-LIVE = os.environ.get("CLIPFORGE_NETWORK_TESTS") == "1" and bool(KEY)
+LIVE = NET and bool(KEY)
+COMPAT_PROVIDER = os.environ.get("CLIPFORGE_LLM_PROVIDER", "")
+COMPAT_LIVE = (
+    NET
+    and COMPAT_PROVIDER in {"openrouter", "groq", "openai_compat"}
+    and bool(os.environ.get("CLIPFORGE_LLM_API_KEY"))
+    and bool(os.environ.get("CLIPFORGE_LLM_MODEL"))
+)
 
 ITEMS = [
     JudgeInput(
@@ -46,11 +55,25 @@ ITEMS = [
                 reason="paid API: set CLIPFORGE_NETWORK_TESTS=1 and CLIPFORGE_ANTHROPIC_API_KEY",
             ),
         ),
+        pytest.param(
+            "compat",
+            marks=pytest.mark.skipif(
+                not COMPAT_LIVE,
+                reason="set CLIPFORGE_NETWORK_TESTS=1, CLIPFORGE_LLM_PROVIDER, _API_KEY, _MODEL",
+            ),
+        ),
     ]
 )
 def judge(request: pytest.FixtureRequest) -> LLMJudge:
     if request.param == "fake":
         return FakeJudge(lambda it: 0.9 if it.index == 0 else 0.1)
+    if request.param == "compat":  # OpenRouter / Groq / any OpenAI-compatible endpoint
+        return OpenAICompatJudge(
+            provider=COMPAT_PROVIDER,
+            model=os.environ["CLIPFORGE_LLM_MODEL"],
+            api_key=os.environ["CLIPFORGE_LLM_API_KEY"],
+            base_url=os.environ.get("CLIPFORGE_LLM_BASE_URL") or None,
+        )
     return AnthropicJudge(
         model=os.environ.get("CLIPFORGE_LLM_MODEL", "claude-haiku-5-5"), api_key=KEY
     )

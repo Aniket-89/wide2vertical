@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
+from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from clipforge.adapters.audio.pyav_rms import PyAvRmsAnalyzer
@@ -21,6 +22,7 @@ from clipforge.adapters.eventbus.in_process import InProcessEventBus
 from clipforge.adapters.fetchers.ytdlp import YtDlpFetcher
 from clipforge.adapters.judges.anthropic_judge import AnthropicJudge
 from clipforge.adapters.judges.null_judge import NullJudge
+from clipforge.adapters.judges.openai_compat_judge import OpenAICompatJudge
 from clipforge.adapters.misc import AllowAllQuota, SystemClock
 from clipforge.adapters.queue.dramatiq_queue import DISPATCH_ACTOR, DramatiqJobQueue, make_broker
 from clipforge.adapters.resolvers.ytdlp import KickResolver, TwitchResolver, YouTubeResolver
@@ -107,25 +109,58 @@ def build_chat_providers(settings: Settings, salt: str) -> dict[Platform, ChatPr
     return providers
 
 
-_JUDGE_CACHE: dict[tuple[str, str], LLMJudge] = {}
+_JUDGE_CACHE: dict[tuple[str, ...], LLMJudge] = {}
+
+
+DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5"
 
 
 def build_judge(settings: Settings) -> LLMJudge:
-    """AnthropicJudge only when explicitly enabled AND a key is configured (paid service)."""
+    """A paid judge only when explicitly enabled AND configured; otherwise NullJudge with the
+    reason. Provider picks the adapter (ADR-0030)."""
     if not settings.enable_llm_judge:
         return NullJudge("ENABLE_LLM_JUDGE is off")
-    key = settings.anthropic_api_key.get_secret_value() if settings.anthropic_api_key else ""
-    if not key:
-        log.warning("llm_judge_enabled_without_key")
-        return NullJudge("ENABLE_LLM_JUDGE is on but CLIPFORGE_ANTHROPIC_API_KEY is empty")
-    cache_key = (settings.llm_model, key[-6:])
-    if cache_key not in _JUDGE_CACHE:  # reuse one HTTP client per process
-        _JUDGE_CACHE[cache_key] = AnthropicJudge(
-            model=settings.llm_model,
-            api_key=key,
-            timeout_s=settings.llm_timeout_s,
-            max_retries=settings.llm_max_retries,
+    provider = settings.llm_provider
+
+    def secret(s: SecretStr | None) -> str:
+        return s.get_secret_value() if s else ""
+
+    if provider == "anthropic":
+        key, key_var = (
+            secret(settings.anthropic_api_key) or secret(settings.llm_api_key),
+            ("CLIPFORGE_ANTHROPIC_API_KEY"),
         )
+    else:
+        key, key_var = secret(settings.llm_api_key), "CLIPFORGE_LLM_API_KEY"
+    if not key:
+        log.warning("llm_judge_enabled_without_key", provider=provider)
+        return NullJudge(f"ENABLE_LLM_JUDGE is on but {key_var} is empty")
+    if provider != "anthropic" and settings.llm_model == DEFAULT_ANTHROPIC_MODEL:
+        log.warning("llm_judge_model_not_set", provider=provider)
+        return NullJudge(f"set CLIPFORGE_LLM_MODEL to a {provider} model id")
+    if provider == "openai_compat" and not settings.llm_base_url:
+        return NullJudge("provider openai_compat needs CLIPFORGE_LLM_BASE_URL")
+
+    cache_key = (provider, settings.llm_model, settings.llm_base_url or "", key[-6:])
+    if cache_key not in _JUDGE_CACHE:  # reuse one HTTP client per process
+        judge: LLMJudge
+        if provider == "anthropic":
+            judge = AnthropicJudge(
+                model=settings.llm_model,
+                api_key=key,
+                timeout_s=settings.llm_timeout_s,
+                max_retries=settings.llm_max_retries,
+            )
+        else:
+            judge = OpenAICompatJudge(
+                provider=provider,
+                model=settings.llm_model,
+                api_key=key,
+                base_url=settings.llm_base_url,
+                timeout_s=settings.llm_timeout_s,
+                max_retries=settings.llm_max_retries,
+            )
+        _JUDGE_CACHE[cache_key] = judge
     return _JUDGE_CACHE[cache_key]
 
 

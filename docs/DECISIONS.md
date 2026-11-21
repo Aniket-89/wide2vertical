@@ -233,3 +233,26 @@ with a 12-char content fingerprint, and a test fails if they drift apart. Releas
 never edited; a change means `…v2`. Each stored verdict records `prompt_id` and `model`.
 Transcripts are treated as untrusted third-party data: they're sent as JSON values, the prompt
 says to treat embedded instructions as speech, and the judge's influence is bounded (ADR-0027).
+
+## ADR-0030 — Judge providers: Anthropic, plus OpenRouter / Groq via one OpenAI-compatible adapter (2026-11-21)
+The owner may use OpenRouter or Groq. Both expose OpenAI-compatible Chat Completions, so one
+`OpenAICompatJudge` (official `openai` SDK, Apache-2.0) covers them and any other compatible
+endpoint (vLLM, Ollama) through `CLIPFORGE_LLM_BASE_URL`. `CLIPFORGE_LLM_PROVIDER` picks
+`anthropic | openrouter | groq | openai_compat`. It uses the same versioned prompt, JSON schema
+and Pydantic validation as `AnthropicJudge`, so verdicts look the same everywhere.
+- **Structured output varies by model on these providers.** Strict `json_schema` is tried
+  first; if the endpoint rejects `response_format`, the adapter switches once to `json_object`
+  (with the schema spelled out in the system prompt and code fences stripped). Validation
+  catches anything off-schema.
+- `temperature: 0` here (allowed on these APIs, unlike current Claude models), for repeatable
+  scores.
+- `judge.model` is reported as `provider:model`, so provenance and the verdict cache stay
+  separate per provider.
+- `CLIPFORGE_LLM_MODEL` must be set explicitly for non-Anthropic providers (model names differ
+  per provider); a misconfiguration gives `NullJudge` with the reason, never a crash.
+- No OpenRouter attribution headers (`HTTP-Referer`/`X-Title`): we send nothing that
+  identifies the user or project.
+- Cost estimates use `CLIPFORGE_LLM_PRICE_*`, which default to Haiku 5.5 prices. Set them for
+  the model you actually use, or the per-video cost report will be wrong.
+- Prompt caching via `cache_control` is Anthropic-only; on other providers caching (if any) is
+  automatic and reported through `prompt_tokens_details.cached_tokens`.

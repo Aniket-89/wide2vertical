@@ -48,8 +48,12 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"
 
     # LLM judge
+    # Provider: anthropic | openrouter | groq | openai_compat (any OpenAI-compatible endpoint)
+    llm_provider: Literal["anthropic", "openrouter", "groq", "openai_compat"] = "anthropic"
     anthropic_api_key: SecretStr | None = None
-    llm_model: str = "claude-haiku-5-5"
+    llm_api_key: SecretStr | None = None  # key for openrouter / groq / openai_compat
+    llm_base_url: str | None = None  # required for openai_compat; optional override otherwise
+    llm_model: str = "claude-haiku-5-5"  # must be set explicitly for non-anthropic providers
     llm_timeout_s: float = 90.0
     llm_max_retries: int = 3
     judge_batch_size: int = Field(default=8, ge=1, le=25)

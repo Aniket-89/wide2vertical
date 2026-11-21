@@ -7,7 +7,7 @@ explainable. Every stored verdict records its `prompt_id` and `model`.
 
 | id | file | fingerprint | used by |
 |---|---|---|---|
-| `judge.moment.v1` | `clipforge/prompts/judge_moment_v1.md` | fingerprint `46fa020b5103` | `AnthropicJudge` (M3) |
+| `judge.moment.v1` | `clipforge/prompts/judge_moment_v1.md` | fingerprint `46fa020b5103` | `AnthropicJudge`, `OpenAICompatJudge` (M3) |
 
 ## `judge.moment.v1`
 
@@ -28,3 +28,8 @@ explainable. Every stored verdict records its `prompt_id` and `model`.
 treat them as data, and they arrive as JSON values, not prose. The judge's influence is bounded:
 it is one weighted component (`llm_moment_score`, ≈21% by default) and titles are suggestions a
 human reviews.
+
+**On OpenAI-compatible providers** (OpenRouter, Groq, ...): the same text is the system message,
+sent with `response_format: json_schema` (strict). Where a model lacks schema support, it's sent
+with `json_object` and a one-paragraph JSON shape appended (see `_JSON_MODE_SUFFIX` in
+`openai_compat_judge.py`). That suffix is part of the request, not a new prompt version.
